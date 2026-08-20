@@ -1,0 +1,19 @@
+# Local session and generated output
+*.db
+*.sqlite
+*.sqlite3
+gander-debug-rows.tsv
+*.log
+*.tmp
+
+# Local environment/configuration
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

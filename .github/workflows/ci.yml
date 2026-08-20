@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y jq sqlite3 shellcheck
+
+      - name: Check Bash syntax
+        run: bash -n gander install.sh lib/*.sh tests/*.sh
+
+      - name: Run ShellCheck
+        run: shellcheck -s bash -x gander install.sh lib/*.sh tests/*.sh
+
+      - name: Run smoke tests
+        run: ./tests/smoke.sh
