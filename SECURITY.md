@@ -24,7 +24,7 @@ exports, database files, credentials, or other private conversation content.
 
 ## Security considerations
 
-honk is a local launcher around the goose CLI and SQLite session database.
+Honk is a local launcher around the goose CLI and SQLite session database.
 It does not intentionally transmit data over the network, but users should
 still:
 

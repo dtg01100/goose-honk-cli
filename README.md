@@ -1,4 +1,4 @@
-# honk
+# Honk
 
 > **Independent third-party project:** This is a community-built companion to
 > [goose](https://github.com/aaif-goose/goose), not an official goose extension,
@@ -11,7 +11,7 @@ This repository is `goose-honk-cli`, and the installed command is `honk`.
 A terminal-native fuzzy launcher for [goose](https://github.com/aaif-goose/goose) sessions.
 
 Goose can resume a session, but finding the right one usually means remembering
-its name, ID, and working directory. honk puts the common session actions in
+its name, ID, and working directory. Honk puts the common session actions in
 one fzf picker and shows a live preview of the conversation tail.
 
 ## Features
@@ -56,8 +56,8 @@ Install these before using the interactive picker:
 - GNU `readlink -f` (or an equivalent that resolves symlinks) for installs
   made from a symlinked checkout
 
-honk is designed for Linux, macOS, and WSL. The session list and action
-commands are provided by the goose CLI; honk does not replace the goose
+Honk is designed for Linux, macOS, and WSL. The session list and action
+commands are provided by the goose CLI; Honk does not replace the goose
 session database or its TUI.
 
 ## Quick start
@@ -156,7 +156,7 @@ HONK_RESUME_PREVIEW=0 honk -r release
 - `lib/sql/queries.sql` contains readable reference queries for the preview
   and metadata data model.
 
-honk does not intentionally send session data over the network. It reads
+Honk does not intentionally send session data over the network. It reads
 the local goose database for previews and delegates state-changing actions to
 goose. Be careful with `Ctrl-D`: deletion is performed only after the
 confirmation prompt.
@@ -180,7 +180,7 @@ sqlite3, which are also runtime dependencies.
   `fzf` is installed and on `$PATH`.
 - **No sessions are listed:** run `goose session list --format json` directly
   and check that the same user owns the goose data directory.
-- **Preview is empty:** install `sqlite3`; honk falls back to metadata-only
+- **Preview is empty:** install `sqlite3`; Honk falls back to metadata-only
   previews when the database or CLI is unavailable.
 - **Install says another file is in the way:** remove the existing non-symlink
   `honk` or choose a different destination.

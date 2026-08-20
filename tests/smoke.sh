@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smoke tests for honk — verifies CLI surface without doing anything destructive.
+# Smoke tests for Honk — verify the CLI surface without doing anything destructive.
 #
 # We fake `goose` by injecting a shim earlier on PATH that emits canned JSON
 # for `session list` and a noop for everything else.
@@ -128,7 +128,7 @@ out=$(cd /tmp && "$ROOT/honk" -r demo </dev/null 2>&1 || true)
 [[ "$out" == *"matches multiple sessions"* ]] || fail "-r 'demo' should report multiple matches. Got: $out"
 pass "-r ambiguous fragment reports multiple matches without a tty"
 
-# Test: honk --limit 1 --all emits exactly 1 row.
+# Test: Honk --limit 1 --all emits exactly 1 row.
 out=$(cd /tmp && "$ROOT/honk" --all --limit 1 --list 2>&1)
 n=$(printf '%s\n' "$out" | grep -c '^abc123\|^def456' || true)
 [[ "$n" -eq 1 ]] || fail "--limit 1 --list should emit 1 session row, got $n: $out"
