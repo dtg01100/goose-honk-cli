@@ -23,6 +23,68 @@ honk_is_positive_integer() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
+# Apply the message-content grep filter to a raw NDJSON session list
+# (the shape honk_list_json emits). Returns the filtered NDJSON on
+# stdout. Returns 1 if the grep query itself fails (e.g. sqlite3 is
+# missing or the DB is unreadable).
+#
+# The grep pass is applied on top of whatever the caller already
+# produced — fresh fetch from goose, cached snapshot, etc. — so the
+# filter is honored uniformly regardless of cache state.
+honk_apply_grep() {
+    local raw="$1"
+    if [[ -z "${HONK_GREP:-}" ]]; then
+        printf '%s\n' "$raw"
+        return 0
+    fi
+    local match_ids
+    match_ids=$(honk_grep_session_ids "${HONK_GREP}") || return 1
+    # NDJSON of session IDs → JSON array of strings. `-s` slurps,
+    # `map(select(. != ""))` drops any blank lines from a final
+    # newline. An empty grep result yields `[]`, which `index()` never
+    # matches — the picker ends up empty, which is the right answer
+    # for "no message contains this query".
+    match_ids=$(printf '%s' "$match_ids" | jq -R . | jq -s 'map(select(. != ""))')
+    printf '%s\n' "$raw" | jq -r --argjson ids "$match_ids" \
+        'select(.id as $id | $ids | index($id))'
+}
+
+# Look up session IDs whose messages contain $1 (case-insensitive
+# substring match against the JSON content of all message parts).
+# Emits NDJSON of session IDs on stdout; one per line. Empty stdout
+# means no matches.
+#
+# The query is escaped for SQL string-literal embedding (single quotes
+# doubled) and for LIKE-pattern embedding (%, _, \ escaped with
+# backslash — the same character the SQL ESCAPE clause uses), so a
+# user's query containing quotes or LIKE wildcards is safe.
+#
+# Requires sqlite3. Returns 1 if sqlite3 is missing or the DB is
+# unreadable; callers should treat that as a hard error so a user who
+# explicitly asked for content search is told why it didn't work.
+honk_grep_session_ids() {
+    local query="$1"
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        echo "honk: grep requires sqlite3" >&2
+        return 1
+    fi
+    local db
+    db=$(honk_db_path)
+    [[ -r "$db" ]] || { echo "honk: cannot read goose DB at $db" >&2; return 1; }
+    # Escape order matters: backslash first, then % and _, so the
+    # backslashes we introduce for the LIKE wildcards don't get
+    # double-escaped by the backslash rule.
+    local q
+    q=$(printf '%s' "$query" \
+        | sed -e "s/'/''/g" \
+              -e 's/\\/\\\\/g' \
+              -e 's/%/\\%/g' \
+              -e 's/_/\\_/g')
+    sqlite3 "$db" <<SQL
+SELECT DISTINCT session_id FROM messages WHERE content_json LIKE '%${q}%' ESCAPE '\' COLLATE NOCASE
+SQL
+}
+
 # Resolve the goose sessions DB path. Honor $GOOSE_SHARED_SESSION_DIR if the
 # user has one, but otherwise derive from goose info.
 honk_db_path() {
@@ -53,7 +115,24 @@ honk_is_under() {
 # Emit newline-delimited JSON for every session after applying filters.
 # Uses `goose session list --format json` as the data source so we stay
 # decoupled from goose's sqlite schema.
+#
+# If $HONK_LIST_CACHE is set and points to a readable file, the cached JSON
+# is emitted verbatim instead of re-querying goose. honk_pick writes that
+# cache once per interactive invocation, so the row builder, fzf's preview
+# pane (which fires on every keystroke), and the action helpers all share
+# a single goose session list roundtrip.
 honk_list_json() {
+    # Hot path: read from the cache. This is the dominant case for the
+    # interactive picker — everything except the initial fetch goes this
+    # way. Falls through to the live fetch if the cache is missing or
+    # unreadable so a stale $HONK_LIST_CACHE never blocks a real query.
+    # The grep filter is applied on top of either path so HONK_GREP
+    # works uniformly.
+    if [[ -n "${HONK_LIST_CACHE:-}" && -r "${HONK_LIST_CACHE}" ]]; then
+        honk_apply_grep "$(cat "${HONK_LIST_CACHE}")"
+        return 0
+    fi
+
     local limit="${HONK_LIMIT:-50}"
     local ascending="${HONK_ASCENDING:-}"
     local pwd_only="${HONK_PWD_ONLY:-1}"
@@ -115,7 +194,11 @@ honk_list_json() {
     fi
     jq_filter+=" | @json"
 
-    printf '%s\n' "$raw" | jq "${jq_args[@]}" "$jq_filter"
+    # Apply the cwd/archive filters in jq, then layer the grep filter
+    # on top via honk_apply_grep — the grep hits sqlite separately so
+    # the jq filter chain stays clean and the same grep pass can be
+    # applied to cached lists.
+    honk_apply_grep "$(printf '%s\n' "$raw" | jq "${jq_args[@]}" "$jq_filter")"
 }
 
 # Format rows for fzf's input: TAB-separated columns that we can color/sort.

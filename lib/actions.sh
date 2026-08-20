@@ -16,10 +16,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/list.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/preview.sh"
 
 # Resolve a session's working_dir. Returns empty string if unknown.
+# Uses honk_list_json so it shares the picker's cached snapshot when one
+# is available (set via $HONK_LIST_CACHE). honk_list_json emits NDJSON
+# (one object per line), so we `select(.id == $id)` per line instead of
+# `.[] | select(.id == $id)`.
 honk_session_working_dir() {
     local sid="$1"
-    goose session list -f json -l 500 2>/dev/null \
-        | jq -r --arg id "$sid" '.[] | select(.id == $id) | .working_dir' \
+    honk_list_json 2>/dev/null \
+        | jq -r --arg id "$sid" 'select(.id == $id) | .working_dir' \
         || true
 }
 

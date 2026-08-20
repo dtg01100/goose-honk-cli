@@ -68,7 +68,12 @@ honk_render_messages_rows() {
     local sid_escaped
     sid_escaped=$(printf "%s" "$sid" | sed "s/'/''/g")
 
-    sqlite3 -separator '|' "$db" <<SQL
+    # Use the ASCII unit separator (US, \x1f) as the column separator so a
+    # message body containing literal `|` characters (e.g. `a | b | c`) is
+    # not shredded by the row formatter's `IFS='|' read`. The unit separator
+    # is a non-printable control character that won't appear in normal
+    # text content.
+    sqlite3 -separator $'\x1f' "$db" <<SQL
 WITH ranked AS (
     SELECT m.role, m.content_json, m.created_timestamp
     FROM messages AS m
@@ -103,25 +108,43 @@ SQL
 # Pretty-prints rows emitted by honk_render_messages_rows.
 #
 # sqlite emits one physical line per embedded newline, so a multi-part body
-# arrives as a "▸ role|part1" line followed by bare continuation lines. Read
-# them as one record: anything not starting with a "▸ " label continues the
-# current body instead of being dropped.
+# arrives as a "▸ role|part1" header followed by bare continuation lines.
+# Anything not starting with a "▸ " label continues the current body instead
+# of being dropped.
+#
+# The column separator is the ASCII unit separator (\x1f), not `|`, so we
+# cannot just `IFS='|' read -r first rest` — `|` in the body would split
+# the wrong way. Instead, split each line ourselves on the first occurrence
+# of \x1f via parameter expansion, which preserves the rest of the body
+# verbatim.
 honk_format_message_rows() {
-    local label="" body="" first rest
+    local label="" body="" line first rest
     honk_flush_message() {
         [[ -z "$body" ]] && return
         printf '\n\033[1;36m%s\033[0m\n' "$label"
         printf '%s' "$body" | fold -s -w 90 | sed 's/^/  /'
     }
-    while IFS='|' read -r first rest; do
+    while IFS= read -r line; do
+        if [[ "$line" == *$'\x1f'* ]]; then
+            first="${line%%$'\x1f'*}"
+            rest="${line#*$'\x1f'}"
+        else
+            first="$line"
+            rest=""
+        fi
         if [[ "$first" == "▸ "* ]]; then
             honk_flush_message
             label="$first"
-            body="${rest:-}"
+            body="$rest"
         else
-            # Continuation line of a multi-part body.
-            body+=$'\n'"$first"
-            [[ -n "${rest:-}" ]] && body+='|'"$rest"
+            # Continuation line of a multi-part body: it carries no role
+            # label, so we just append it to the current body.
+            if [[ -n "$body" ]]; then
+                body+=$'\n'"$first"
+            else
+                body="$first"
+            fi
+            [[ -n "$rest" ]] && body+=$'\n'"$rest"
         fi
     done
     honk_flush_message
@@ -139,11 +162,17 @@ honk_preview() {
         return 0
     fi
 
-    # Pull metadata cheaply — goose session list is already cached, and for a
-    # single id it's fast enough.
+    # Pull metadata from the same snapshot the picker rendered its rows
+    # from. honk_pick writes that snapshot to $HONK_LIST_CACHE; when the
+    # picker is open this lookup is a file read instead of another goose
+    # session list roundtrip. fzf invokes this script on every keystroke,
+    # so the cache is what keeps the preview pane responsive.
+    #
+    # honk_list_json emits NDJSON (one object per line) rather than a JSON
+    # array, so we `select(.id == $id)` per line instead of `.[] | select'.
     local meta
-    meta=$(goose session list -f json -l 500 2>/dev/null \
-        | jq -r --arg id "$sid" '.[] | select(.id == $id)') || true
+    meta=$(honk_list_json 2>/dev/null \
+        | jq -r --arg id "$sid" 'select(.id == $id)') || true
 
     if [[ -n "$meta" ]]; then
         honk_preview_header "$sid" "$meta"

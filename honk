@@ -11,6 +11,8 @@
 #   honk --no-cwd            don't filter by cwd (alias for --all)
 #   honk --archived          include archived sessions
 #   honk --limit N           (default: 50)
+#   honk --grep <query>      filter picker to sessions whose messages contain query
+#   honk --version           print honk version and exit
 #   honk --help
 #
 # See README.md for action keybindings inside the picker.
@@ -31,6 +33,17 @@ source "$HONK_LIB/actions.sh"
 
 HONK_LIMIT_DEFAULT=50
 
+# Resolve the version string. Prefer `git describe` when the checkout is
+# a git working tree so development builds self-identify; otherwise fall
+# back to the baked-in release tag.
+HONK_VERSION="0.1.0"
+if command -v git >/dev/null 2>&1 && [[ -d "$HONK_ROOT/.git" ]]; then
+    if v=$(git -C "$HONK_ROOT" describe --always --dirty 2>/dev/null) && [[ -n "$v" ]]; then
+        HONK_VERSION="$v"
+    fi
+fi
+export HONK_VERSION
+
 usage() {
     cat <<'EOF'
 Honk — independent third-party fuzzy launcher for goose sessions
@@ -45,6 +58,8 @@ USAGE
   honk --no-cwd             Don't filter by cwd (alias for --all)
   honk --archived           Include archived sessions
   honk --limit N            Limit results (default: 50)
+  honk --grep QUERY         Restrict picker to sessions whose messages contain QUERY
+  honk --version            Print honk version and exit
   honk --help               Show this help
 
 PICKER KEY BINDINGS
@@ -54,12 +69,16 @@ PICKER KEY BINDINGS
   Ctrl-E        Export session JSON to ./
   Ctrl-D        Delete (asks for y/N confirmation)
   Ctrl-A        Show all sessions; press again to return to cwd-only
+  Ctrl-G        Grep messages: prompt for a query, then reopen the picker
+                filtered to sessions whose messages contain it (empty
+                input clears the filter; cwd-only mode is preserved)
   Esc / Ctrl-C  Cancel
 
 EXAMPLES
   honk
   honk --working-dir ~/projects/foo
   HONK_LIMIT=200 honk --all
+  honk --grep TODO         # only sessions whose messages contain "TODO"
   honk -r CI    # fuzzy-resolve and resume a session matching 'CI'
 
 ENVIRONMENT
@@ -67,6 +86,7 @@ ENVIRONMENT
   HONK_ARCHIVED=1       Include archived sessions
   HONK_PWD_ONLY=0       Don't filter by cwd
   HONK_WORKDIR=DIR      Override cwd filter base
+  HONK_GREP=QUERY       Filter to sessions whose messages contain QUERY
   HONK_RESUME_PREVIEW=0 Skip echoing the conversation tail before resume/fork
   HONK_RESUME_TAIL=N    Messages to echo before resume/fork (default: 4)
 EOF
@@ -132,6 +152,25 @@ honk_pick() {
 
     if ! command -v fzf >/dev/null 2>&1; then
         echo "honk: fzf is required for the interactive picker" >&2
+        return 1
+    fi
+
+    # Snapshot the session list once. The picker builds rows from this
+    # call, the recent-directories strip uses it again, the pickdir action
+    # uses it again, and the fzf preview pane (which runs on every cursor
+    # move and keypress) reads from it too. One goose roundtrip + one jq
+    # filter is enough.
+    local cache
+    cache=$(mktemp "${TMPDIR:-/tmp}/honk.XXXXXX.json")
+    export HONK_LIST_CACHE="$cache"
+    # Clean up on shell exit. The resume/fork/new actions exec into goose
+    # so the cache is leaked in that path, but only one tempfile per
+    # picker invocation — `/tmp` reapers tolerate that.
+    trap 'rm -f "$cache"' EXIT
+    if ! honk_list_json > "$cache"; then
+        rm -f "$cache"
+        export HONK_LIST_CACHE=
+        echo "honk: failed to fetch session list" >&2
         return 1
     fi
 
@@ -230,8 +269,8 @@ honk_pick() {
             --border \
             --preview="$preview_cmd" \
             --preview-window='right:55%:wrap:border-sharp' \
-            --header='enter resume · ^F fork · ^N new · ^E export · ^D delete · ^A all sessions' \
-            --expect='enter,ctrl-a,ctrl-f,ctrl-n,ctrl-e,ctrl-d' \
+            --header='enter resume · ^F fork · ^N new · ^E export · ^D delete · ^A all sessions · ^G grep' \
+            --expect='enter,ctrl-a,ctrl-f,ctrl-n,ctrl-e,ctrl-d,ctrl-g' \
         <<<"$fmt_rows"
     ) || {
         local rc=$?
@@ -276,13 +315,37 @@ honk_pick() {
             ;;
         ctrl-a)
             # Reopen the picker in the opposite filter mode. exec so honk
-            # is replaced; carry over the result cap and working directory.
+            # is replaced; carry over the result cap, working directory,
+            # and any active grep query.
             local reopen=( --limit "$limit" )
             if [[ -n "${HONK_WORKDIR:-}" ]]; then
                 reopen+=( --working-dir "$HONK_WORKDIR" )
             fi
             if (( pwd_only == 1 )); then
                 reopen+=( --all )
+            fi
+            if [[ -n "${HONK_GREP:-}" ]]; then
+                reopen+=( --grep "${HONK_GREP}" )
+            fi
+            exec "$(readlink -f "$0")" "${reopen[@]}"
+            ;;
+        ctrl-g)
+            # Prompt for a grep query and reopen the picker with it.
+            # Empty input clears the filter. The cwd-only mode is
+            # preserved across the reopen (we add --all iff currently
+            # showing all sessions). exec so the new picker comes up
+            # under the same terminal fds and reads stdin from /dev/tty.
+            local new_query
+            read -r -p "grep (empty to clear): " new_query </dev/tty || return 0
+            local reopen=( --limit "$limit" )
+            if [[ -n "${HONK_WORKDIR:-}" ]]; then
+                reopen+=( --working-dir "$HONK_WORKDIR" )
+            fi
+            if (( pwd_only == 0 )); then
+                reopen+=( --all )
+            fi
+            if [[ -n "$new_query" ]]; then
+                reopen+=( --grep "$new_query" )
             fi
             exec "$(readlink -f "$0")" "${reopen[@]}"
             ;;
@@ -328,14 +391,17 @@ query=""
 list=0
 json=0
 help=0
+version=0
 limit="${HONK_LIMIT:-$HONK_LIMIT_DEFAULT}"
 workdir="${HONK_WORKDIR:-}"
 cwd_only="${HONK_PWD_ONLY:-1}"
 archived="${HONK_ARCHIVED:-0}"
+grep_query="${HONK_GREP:-}"
 
 while (($#)); do
     case "$1" in
         -h|--help)        help=1 ;;
+        -V|--version)     version=1 ;;
         -l|--list)        list=1 ;;
         --json)           json=1 ;;
         -r|--resume)      mode="resolve"; shift; query="${1:-}"; [[ -z "$query" ]] && { echo "honk: -r needs an argument" >&2; exit 2; } ;;
@@ -344,6 +410,8 @@ while (($#)); do
         --all)            cwd_only=0 ;;
         --archived)       archived=1 ;;
         --limit)          shift; limit="${1:-}"; [[ -z "$limit" ]] && { echo "honk: --limit needs an argument" >&2; exit 2; } ;;
+        --grep)           shift; grep_query="${1:-}"; [[ -z "$grep_query" ]] && { echo "honk: --grep needs a non-empty argument (use --no-grep to clear)" >&2; exit 2; } ;;
+        --no-grep)        grep_query="" ;;
         --no-cwd)         cwd_only=0 ;;
         --)               shift; break ;;
         -*)               echo "honk: unknown flag: $1" >&2; exit 2 ;;
@@ -369,9 +437,15 @@ export HONK_LIMIT="$limit"
 export HONK_PWD_ONLY="$cwd_only"
 export HONK_ARCHIVED="$archived"
 export HONK_WORKDIR="$workdir"
+export HONK_GREP="$grep_query"
 
 if (( help )); then
     usage
+    exit 0
+fi
+
+if (( version )); then
+    printf 'honk %s\n' "$HONK_VERSION"
     exit 0
 fi
 

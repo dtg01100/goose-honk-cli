@@ -98,6 +98,9 @@ honk --all                   # include sessions outside the cwd subtree
 honk --no-cwd                # alias for --all
 honk --archived              # include archived sessions
 honk --limit 100             # cap the result count (default: 50)
+honk --grep TODO             # only sessions whose messages contain "TODO"
+honk --version               # print honk version and exit
+honk --help                  # full usage
 honk --help
 ```
 
@@ -111,6 +114,7 @@ honk --help
 | `Ctrl-E` | Export the session JSON to `./<id>.json` |
 | `Ctrl-D` | Delete the session after a `y/N` confirmation |
 | `Ctrl-A` | Toggle the cwd-only/all-sessions filter |
+| `Ctrl-G` | Grep messages: prompt for a query, then reopen the picker filtered to sessions whose messages contain it (empty input clears the filter; cwd-only mode is preserved) |
 | `Esc` / `Ctrl-C` | Cancel |
 
 Search fields are name, ID, and working directory. The `goose` session list is
@@ -135,12 +139,14 @@ options override them:
 | `HONK_RESUME_TAIL` | `4` | Number of messages to echo before resume/fork |
 | `HONK_PREVIEW_TEXT_CAP` | `200` | Per-part text length in the fzf preview |
 | `HONK_FZF_TIMEOUT` | `600` | Picker idle timeout in seconds |
+| `HONK_GREP` | unset | Filter to sessions whose messages contain this substring (case-insensitive); see `--grep` |
 
 For example:
 
 ```sh
 HONK_LIMIT=200 HONK_PWD_ONLY=0 honk
 HONK_RESUME_PREVIEW=0 honk -r release
+HONK_GREP=TODO honk       # only sessions whose messages contain "TODO"
 ```
 
 ## How it works
