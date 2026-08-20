@@ -17,7 +17,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y jq sqlite3 shellcheck
+          sudo apt-get install --no-install-recommends -y fzf jq sqlite3 shellcheck
 
       - name: Check Bash syntax
         run: bash -n honk install.sh lib/*.sh tests/*.sh
