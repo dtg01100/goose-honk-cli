@@ -1,6 +1,12 @@
 # gander
 
-A terminal-native fuzzy launcher for [goose](https://github.com/block/goose) sessions.
+> **Independent third-party project:** This is a community-built companion to
+> [goose](https://github.com/aaif-goose/goose), not an official goose extension,
+> plugin, or bundled component. It is not authored, maintained, endorsed, or
+> supported by the goose project, AAIF, or Block. It uses the local goose CLI
+> and session data, but that does not imply official support or affiliation.
+
+A terminal-native fuzzy launcher for [goose](https://github.com/aaif-goose/goose) sessions.
 
 Goose can resume a session, but finding the right one usually means remembering
 its name, ID, and working directory. Gander puts the common session actions in
@@ -16,6 +22,25 @@ one fzf picker and shows a live preview of the conversation tail.
 - Use `--list` and `--json` for non-interactive output, and `-r` for
   fragment-based resume.
 - Install as a symlink from any checkout; no daemon, telemetry, or build step.
+
+## Relationship to goose
+
+This project is intentionally a separate, composable CLI: it queries
+goose session list and hands resume, fork, export, and delete operations back to
+goose. It does not replace or patch the goose binary.
+
+The [goose project](https://github.com/aaif-goose/goose) is an independent
+open-source project now stewarded through the Agentic AI Foundation (AAIF). The
+maintainers have discussed a fuzzy session picker in
+[goose issue #9915](https://github.com/aaif-goose/goose/issues/9915) and
+currently prefer composable tools such as jq and fzf over embedding one picker
+in goose. This project follows that approach without claiming to be part of the
+official product.
+
+If the functionality is eventually accepted upstream, the preferred path is
+likely a native Rust change in the goose CLI using its session manager, not a
+Bash wrapper. See [UPSTREAM.md](UPSTREAM.md) for the proposed path and the
+official contribution constraints.
 
 ## Requirements
 
@@ -165,6 +190,9 @@ sqlite3, which are also runtime dependencies.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development conventions and the
 pull-request checklist. Please read [SECURITY.md](SECURITY.md) before
 reporting a vulnerability.
+
+For the longer-term goal of contributing this functionality to goose proper,
+see [UPSTREAM.md](UPSTREAM.md).
 
 ## License
 

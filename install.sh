@@ -46,6 +46,7 @@ fi
 ln -sfn "$SCRIPT" "$link"
 
 echo "✓ installed: $link -> $SCRIPT"
+echo "This is an independent third-party companion to goose, not an official goose extension."
 echo
 # Choose the right PATH tip depending on where we installed.
 case "$dest" in

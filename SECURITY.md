@@ -1,5 +1,10 @@
 # Security policy
 
+This is an independent, third-party companion to goose. It is not an official
+goose component, and security reports about this repository should not be
+sent to the goose maintainers unless they also affect the upstream project.
+See [UPSTREAM.md](UPSTREAM.md) for the relationship and contribution path.
+
 ## Supported versions
 
 Only the `main` branch is currently supported. Older snapshots and locally

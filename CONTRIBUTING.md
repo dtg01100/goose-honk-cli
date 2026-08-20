@@ -3,6 +3,11 @@
 Thanks for helping improve gander. Contributions are welcome for bug fixes,
 documentation, portability, and test coverage.
 
+This repository is an independent, third-party companion to goose. Do not
+describe it, its maintainers, or its output as an official goose project or
+product contribution. For the longer-term possibility of upstream integration,
+read [UPSTREAM.md](UPSTREAM.md) before proposing changes to goose.
+
 ## Before opening a pull request
 
 1. Keep the command-line behavior and documented key bindings compatible.

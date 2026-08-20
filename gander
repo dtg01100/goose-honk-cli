@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gander — fuzzy launcher for goose sessions.
+# gander — independent third-party fuzzy launcher for goose sessions.
 #
 # Usage:
 #   gander                     interactive picker
@@ -33,7 +33,7 @@ GG_LIMIT_DEFAULT=50
 
 usage() {
     cat <<'EOF'
-gander — fuzzy launcher for goose sessions
+gander — independent third-party fuzzy launcher for goose sessions
 
 USAGE
   gander                      Interactive picker (default)
