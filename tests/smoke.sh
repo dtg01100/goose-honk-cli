@@ -135,7 +135,7 @@ pass "--json emits correct number of objects"
 
 # Test: -r with an unambiguous fragment resolves and resumes the right session.
 # stdin is /dev/null so any multi-match fallback can't hang on fzf.
-out=$(cd /tmp && "$ROOT/honk" -r "demo one" </dev/null 2>&1 || true)
+out=$(cd /tmp && "$ROOT/honk" -r "demo one" </dev/null 2>&1) || true
 [[ "$out" == *"abc123"* ]] || fail "-r 'demo one' should resolve to abc123. Got: $out"
 # Regression: the session id must appear exactly once in the resume argv. A
 # duplicate positional id makes clap reject it as an unrecognized subcommand
@@ -147,7 +147,7 @@ pass "-r unambiguous fragment resumes the right session"
 
 # Test: -r with an ambiguous fragment and no tty reports the ambiguity instead
 # of silently dropping the pick.
-out=$(cd /tmp && "$ROOT/honk" -r demo </dev/null 2>&1 || true)
+out=$(cd /tmp && "$ROOT/honk" -r demo </dev/null 2>&1) || true
 [[ "$out" == *"matches multiple sessions"* ]] || fail "-r 'demo' should report multiple matches. Got: $out"
 pass "-r ambiguous fragment reports multiple matches without a tty"
 
@@ -175,7 +175,7 @@ INSERT INTO messages VALUES
     ('abc123', 'assistant', '[{"type":"text","text":"hello line one"},{"type":"text","text":"hello line two"}]', '2026-08-20T16:50:00Z', 1),
     ('abc123', 'user',     '[{"type":"text","text":"hello user"}]', '2026-08-20T16:40:00Z', 2);
 SQL
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" bash "$ROOT/lib/preview.sh" abc123 2>&1 || true)
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" bash "$ROOT/lib/preview.sh" abc123 2>&1) || true
     [[ "$out" == *"hello line one"* ]] || fail "preview missing first part. Got: $out"
     [[ "$out" == *"hello line two"* ]] || fail "preview dropped the second part of a multi-part message. Got: $out"
     [[ "$out" == *"hello user"* ]] || fail "preview missing user message. Got: $out"
@@ -199,7 +199,7 @@ SQL
         '{"id":"pipe123","name":"pipe test","working_dir":"/tmp","updated_at":"2026-08-20T16:55:00Z","message_count":2,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T16:55:00Z"}' \
         > "$pipe_cache"
     out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$pipe_cache" \
-        bash "$ROOT/lib/preview.sh" pipe123 2>&1 || true)
+        bash "$ROOT/lib/preview.sh" pipe123 2>&1) || true
     rm -f "$pipe_cache"
     [[ "$out" == *"pipe payload: a | b | c"* ]] \
         || fail "preview mangled body containing |. Got: $out"
@@ -257,7 +257,7 @@ SQL
     out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_TAIL=4 bash -c '
         source "$1/lib/actions.sh"
         honk_show_session_tail abc123
-    ' _ "$ROOT" 2>&1 || true)
+    ' _ "$ROOT" 2>&1) || true
     [[ "$out" == *"last 4 messages"* ]] || fail "resume tail header missing. Got: $out"
     [[ "$out" == *"hello line two"* ]] || fail "resume tail missing the last message. Got: $out"
     [[ "$out" == *"hello user"* ]] || fail "resume tail missing earlier message. Got: $out"
@@ -266,7 +266,7 @@ SQL
     out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_TAIL=bad bash -c '
         source "$1/lib/actions.sh"
         honk_show_session_tail abc123
-    ' _ "$ROOT" 2>&1 || true)
+    ' _ "$ROOT" 2>&1) || true
     [[ "$out" == *"using 4"* ]] || fail "invalid HONK_RESUME_TAIL should fall back to 4. Got: $out"
     pass "invalid resume tail falls back to the default"
 
@@ -274,7 +274,7 @@ SQL
     out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_PREVIEW=0 bash -c '
         source "$1/lib/actions.sh"
         honk_show_session_tail abc123
-    ' _ "$ROOT" 2>&1 || true)
+    ' _ "$ROOT" 2>&1) || true
     [[ -z "$out" ]] || fail "HONK_RESUME_PREVIEW=0 should suppress the tail. Got: $out"
     pass "resume echoes the conversation tail (and can be disabled)"
 
@@ -371,7 +371,7 @@ SQL
     mkdir -p "$TMP/no-sqlite"
     out=$(cd /tmp && XDG_DATA_HOME="$TMP/no-sqlite" \
         HONK_GREP="anything" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1 || true)
+        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1) || true
     [[ "$out" == *"goose DB"* || "$out" == *"sqlite3"* ]] \
         || fail "HONK_GREP with missing DB should error clearly. Got: $out"
     pass "HONK_GREP surfaces a clear error when the DB is unreadable"
