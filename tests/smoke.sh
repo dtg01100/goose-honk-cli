@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smoke tests for gander — verifies CLI surface without doing anything destructive.
+# smoke tests for honk — verifies CLI surface without doing anything destructive.
 #
 # We fake `goose` by injecting a shim earlier on PATH that emits canned JSON
 # for `session list` and a noop for everything else.
@@ -52,12 +52,12 @@ pass() { printf '\033[32m✓\033[0m %s\n' "$1"; }
 fail() { printf '\033[31m✗\033[0m %s\n' "$1"; exit 1; }
 
 # Test: --help
-out=$("$ROOT/gander" --help 2>&1)
+out=$("$ROOT/honk" --help 2>&1)
 [[ "$out" == *"USAGE"* ]] || fail "--help missing USAGE"
 pass "--help works"
 
 # Test: --list with cwd filter excluding /tmp/demo (when cwd is /var)
-out=$(cd /var && "$ROOT/gander" --list 2>&1)
+out=$(cd /var && "$ROOT/honk" --list 2>&1)
 # With pwd_only=1 (default), rows in /tmp/demo should NOT appear when PWD is /var.
 if [[ "$out" == *"demo one"* ]]; then
     fail "cwd filter should hide /tmp/demo when PWD is /var. Got: $out"
@@ -67,7 +67,7 @@ pass "--list with cwd filter hides off-tree sessions"
 # Test: cwd filter is a subtree match, not a prefix match. From /tmp/demo,
 # /tmp/demo must match exactly, but the prefix sibling /tmp/demo-sibling and
 # the parent /tmp must both be excluded.
-out=$(GG_WORKDIR=/tmp/demo "$ROOT/gander" --list 2>&1)
+out=$(HONK_WORKDIR=/tmp/demo "$ROOT/honk" --list 2>&1)
 [[ "$out" == *"demo one"* ]] || fail "session in /tmp/demo should appear when PWD=/tmp/demo. Got: $out"
 if [[ "$out" == *"demo sibling"* ]]; then
     fail "prefix sibling /tmp/demo-sibling must not match subtree /tmp/demo. Got: $out"
@@ -78,7 +78,7 @@ fi
 pass "cwd filter matches subtree, not prefix"
 
 # Test: --list pads the name column so working_dirs align (pad() fix).
-out=$(cd /tmp && "$ROOT/gander" --all --list 2>&1)
+out=$(cd /tmp && "$ROOT/honk" --all --list 2>&1)
 col_one=$(printf '%s\n' "$out" | grep 'demo one' | grep -bo '/tmp/demo' | head -1 | cut -d: -f1)
 col_sib=$(printf '%s\n' "$out" | grep 'demo sibling' | grep -bo '/tmp/demo' | head -1 | cut -d: -f1)
 [[ -n "$col_one" && "$col_one" == "$col_sib" ]] \
@@ -86,33 +86,33 @@ col_sib=$(printf '%s\n' "$out" | grep 'demo sibling' | grep -bo '/tmp/demo' | he
 pass "--list aligns the working_dir column"
 
 # Test: --all overrides filter
-out=$(cd /var && "$ROOT/gander" --all --list 2>&1)
+out=$(cd /var && "$ROOT/honk" --all --list 2>&1)
 [[ "$out" == *"demo one"* ]] || fail "--all should include /tmp/demo. Got: $out"
 [[ "$out" == *"demo two"* ]] || fail "--all should include /tmp. Got: $out"
 [[ "$out" == *"demo sibling"* ]] || fail "--all should include /tmp/demo-sibling. Got: $out"
 pass "--all includes everything"
 
 # Test: documented environment defaults are honored.
-out=$(cd /var && GG_PWD_ONLY=0 GG_LIMIT=2 "$ROOT/gander" --list 2>&1)
+out=$(cd /var && HONK_PWD_ONLY=0 HONK_LIMIT=2 "$ROOT/honk" --list 2>&1)
 n=$(printf '%s\n' "$out" | grep -c '^abc123\|^def456' || true)
-[[ "$n" -eq 2 ]] || fail "GG_PWD_ONLY=0 and GG_LIMIT=2 should emit 2 sessions, got $n: $out"
+[[ "$n" -eq 2 ]] || fail "HONK_PWD_ONLY=0 and HONK_LIMIT=2 should emit 2 sessions, got $n: $out"
 pass "environment defaults are honored"
 
 # Test: invalid numeric options fail before querying goose.
-if "$ROOT/gander" --limit 0 --list >/dev/null 2>&1; then
+if "$ROOT/honk" --limit 0 --list >/dev/null 2>&1; then
     fail "--limit 0 should be rejected"
 fi
 pass "invalid --limit is rejected"
 
 # Test: --json emits 3 objects (run under /tmp so cwd filter lets them through)
-out=$(cd /tmp && "$ROOT/gander" --json 2>&1)
+out=$(cd /tmp && "$ROOT/honk" --json 2>&1)
 n=$(printf '%s' "$out" | grep -c '^{')
 [[ "$n" -eq 3 ]] || fail "--json should emit 3 objects under /tmp, got $n"
 pass "--json emits correct number of objects"
 
 # Test: -r with an unambiguous fragment resolves and resumes the right session.
 # stdin is /dev/null so any multi-match fallback can't hang on fzf.
-out=$(cd /tmp && "$ROOT/gander" -r "demo one" </dev/null 2>&1 || true)
+out=$(cd /tmp && "$ROOT/honk" -r "demo one" </dev/null 2>&1 || true)
 [[ "$out" == *"abc123"* ]] || fail "-r 'demo one' should resolve to abc123. Got: $out"
 # Regression: the session id must appear exactly once in the resume argv. A
 # duplicate positional id makes clap reject it as an unrecognized subcommand
@@ -124,12 +124,12 @@ pass "-r unambiguous fragment resumes the right session"
 
 # Test: -r with an ambiguous fragment and no tty reports the ambiguity instead
 # of silently dropping the pick.
-out=$(cd /tmp && "$ROOT/gander" -r demo </dev/null 2>&1 || true)
+out=$(cd /tmp && "$ROOT/honk" -r demo </dev/null 2>&1 || true)
 [[ "$out" == *"matches multiple sessions"* ]] || fail "-r 'demo' should report multiple matches. Got: $out"
 pass "-r ambiguous fragment reports multiple matches without a tty"
 
-# Test: gander --limit 1 --all emits exactly 1 row.
-out=$(cd /tmp && "$ROOT/gander" --all --limit 1 --list 2>&1)
+# Test: honk --limit 1 --all emits exactly 1 row.
+out=$(cd /tmp && "$ROOT/honk" --all --limit 1 --list 2>&1)
 n=$(printf '%s\n' "$out" | grep -c '^abc123\|^def456' || true)
 [[ "$n" -eq 1 ]] || fail "--limit 1 --list should emit 1 session row, got $n: $out"
 pass "--limit caps the result count"
@@ -161,28 +161,28 @@ SQL
     pass "preview renders multi-part messages and header cost"
 
     # Test: resume echoes the conversation tail before handing off to goose.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" GG_RESUME_TAIL=4 bash -c '
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_TAIL=4 bash -c '
         source "$1/lib/actions.sh"
-        gg_show_session_tail abc123
+        honk_show_session_tail abc123
     ' _ "$ROOT" 2>&1 || true)
     [[ "$out" == *"last 4 messages"* ]] || fail "resume tail header missing. Got: $out"
     [[ "$out" == *"hello line two"* ]] || fail "resume tail missing the last message. Got: $out"
     [[ "$out" == *"hello user"* ]] || fail "resume tail missing earlier message. Got: $out"
 
     # Invalid tail values fall back to the documented default.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" GG_RESUME_TAIL=bad bash -c '
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_TAIL=bad bash -c '
         source "$1/lib/actions.sh"
-        gg_show_session_tail abc123
+        honk_show_session_tail abc123
     ' _ "$ROOT" 2>&1 || true)
-    [[ "$out" == *"using 4"* ]] || fail "invalid GG_RESUME_TAIL should fall back to 4. Got: $out"
+    [[ "$out" == *"using 4"* ]] || fail "invalid HONK_RESUME_TAIL should fall back to 4. Got: $out"
     pass "invalid resume tail falls back to the default"
 
-    # GG_RESUME_PREVIEW=0 must suppress the tail entirely.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" GG_RESUME_PREVIEW=0 bash -c '
+    # HONK_RESUME_PREVIEW=0 must suppress the tail entirely.
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_PREVIEW=0 bash -c '
         source "$1/lib/actions.sh"
-        gg_show_session_tail abc123
+        honk_show_session_tail abc123
     ' _ "$ROOT" 2>&1 || true)
-    [[ -z "$out" ]] || fail "GG_RESUME_PREVIEW=0 should suppress the tail. Got: $out"
+    [[ -z "$out" ]] || fail "HONK_RESUME_PREVIEW=0 should suppress the tail. Got: $out"
     pass "resume echoes the conversation tail (and can be disabled)"
 else
     echo "skipping preview/tail tests (sqlite3 not installed)"

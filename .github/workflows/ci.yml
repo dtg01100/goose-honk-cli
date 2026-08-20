@@ -20,10 +20,10 @@ jobs:
           sudo apt-get install --no-install-recommends -y jq sqlite3 shellcheck
 
       - name: Check Bash syntax
-        run: bash -n gander install.sh lib/*.sh tests/*.sh
+        run: bash -n honk install.sh lib/*.sh tests/*.sh
 
       - name: Run ShellCheck
-        run: shellcheck -s bash -x gander install.sh lib/*.sh tests/*.sh
+        run: shellcheck -s bash -x honk install.sh lib/*.sh tests/*.sh
 
       - name: Run smoke tests
         run: ./tests/smoke.sh

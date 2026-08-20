@@ -1,6 +1,6 @@
-# Contributing to gander
+# Contributing to honk
 
-Thanks for helping improve gander. Contributions are welcome for bug fixes,
+Thanks for helping improve honk. Contributions are welcome for bug fixes,
 documentation, portability, and test coverage.
 
 This repository is an independent, third-party companion to goose. Do not
@@ -19,7 +19,7 @@ read [UPSTREAM.md](UPSTREAM.md) before proposing changes to goose.
 
 ## Development setup
 
-Gander has no build step. Install Bash 4+, jq, sqlite3, and ShellCheck. The smoke
+honk has no build step. Install Bash 4+, jq, sqlite3, and ShellCheck. The smoke
 test uses a temporary fake `goose` executable and does not need a live session
 database.
 
@@ -33,8 +33,8 @@ make test
 Or run the commands directly:
 
 ```sh
-bash -n gander install.sh lib/*.sh tests/*.sh
-shellcheck -s bash -x gander install.sh lib/*.sh tests/*.sh
+bash -n honk install.sh lib/*.sh tests/*.sh
+shellcheck -s bash -x honk install.sh lib/*.sh tests/*.sh
 ./tests/smoke.sh
 ```
 

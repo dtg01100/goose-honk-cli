@@ -1,51 +1,51 @@
 #!/usr/bin/env bash
-# gander — independent third-party fuzzy launcher for goose sessions.
+# honk — independent third-party fuzzy launcher for goose sessions.
 #
 # Usage:
-#   gander                     interactive picker
-#   gander -r <fragment>       resolve fragment → resume (no picker)
-#   gander --list              pretty text table
-#   gander --json              newline-delimited JSON
-#   gander --working-dir DIR   restrict picker to a directory subtree
-#   gander --all               don't filter by cwd
-#   gander --no-cwd            don't filter by cwd (alias for --all)
-#   gander --archived          include archived sessions
-#   gander --limit N           (default: 50)
-#   gander --help
+#   honk                     interactive picker
+#   honk -r <fragment>       resolve fragment → resume (no picker)
+#   honk --list              pretty text table
+#   honk --json              newline-delimited JSON
+#   honk --working-dir DIR   restrict picker to a directory subtree
+#   honk --all               don't filter by cwd
+#   honk --no-cwd            don't filter by cwd (alias for --all)
+#   honk --archived          include archived sessions
+#   honk --limit N           (default: 50)
+#   honk --help
 #
 # See README.md for action keybindings inside the picker.
 
 set -euo pipefail
 
-# Resolve project root regardless of where gander was invoked from.
-GG_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-export GG_ROOT
-GG_LIB="$GG_ROOT/lib"
+# Resolve project root regardless of where honk was invoked from.
+HONK_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+export HONK_ROOT
+HONK_LIB="$HONK_ROOT/lib"
 
 # shellcheck disable=SC1091
-source "$GG_LIB/list.sh"
+source "$HONK_LIB/list.sh"
 # shellcheck disable=SC1091
-source "$GG_LIB/preview.sh"
+source "$HONK_LIB/preview.sh"
 # shellcheck disable=SC1091
-source "$GG_LIB/actions.sh"
+source "$HONK_LIB/actions.sh"
 
-GG_LIMIT_DEFAULT=50
+HONK_LIMIT_DEFAULT=50
 
 usage() {
     cat <<'EOF'
-gander — independent third-party fuzzy launcher for goose sessions
+honk — independent third-party fuzzy launcher for goose sessions
 
 USAGE
-  gander                      Interactive picker (default)
-  gander -r <fragment>        Resolve fragment against id/name/path and resume
-  gander --list               Pretty text list of recent sessions
-  gander --json               Newline-delimited JSON, one object per session
-  gander --working-dir DIR    Restrict picker to sessions in DIR (default: $PWD)
-  gander --all                Don't filter by cwd
-  gander --no-cwd             Don't filter by cwd (alias for --all)
-  gander --archived           Include archived sessions
-  gander --limit N            Limit results (default: 50)
-  gander --help               Show this help
+  honk                      Interactive picker (default)
+  honk -r <fragment>        Resolve fragment against id/name/path and resume
+  honk --list               Pretty text list of recent sessions
+  honk --json               Newline-delimited JSON, one object per session
+  honk --working-dir DIR    Restrict picker to sessions in DIR (default: $PWD)
+  honk --all                Don't filter by cwd
+  honk --no-cwd             Don't filter by cwd (alias for --all)
+  honk --archived           Include archived sessions
+  honk --limit N            Limit results (default: 50)
+  honk --help               Show this help
 
 PICKER KEY BINDINGS
   Enter         Resume selected session (cd to its working_dir)
@@ -57,28 +57,28 @@ PICKER KEY BINDINGS
   Esc / Ctrl-C  Cancel
 
 EXAMPLES
-  gander
-  gander --working-dir ~/projects/foo
-  GG_LIMIT=200 gander --all
-  gander -r CI    # fuzzy-resolve and resume a session matching 'CI'
+  honk
+  honk --working-dir ~/projects/foo
+  HONK_LIMIT=200 honk --all
+  honk -r CI    # fuzzy-resolve and resume a session matching 'CI'
 
 ENVIRONMENT
-  GG_LIMIT            Default limit (overridden by --limit)
-  GG_ARCHIVED=1       Include archived sessions
-  GG_PWD_ONLY=0       Don't filter by cwd
-  GG_WORKDIR=DIR      Override cwd filter base
-  GG_RESUME_PREVIEW=0 Skip echoing the conversation tail before resume/fork
-  GG_RESUME_TAIL=N    Messages to echo before resume/fork (default: 4)
+  HONK_LIMIT            Default limit (overridden by --limit)
+  HONK_ARCHIVED=1       Include archived sessions
+  HONK_PWD_ONLY=0       Don't filter by cwd
+  HONK_WORKDIR=DIR      Override cwd filter base
+  HONK_RESUME_PREVIEW=0 Skip echoing the conversation tail before resume/fork
+  HONK_RESUME_TAIL=N    Messages to echo before resume/fork (default: 4)
 EOF
 }
 
 # Non-interactive resume by fragment.
 # Rank: exact id > exact name > prefix name > substring. Falls back to fzf if
 # ambiguous (>1 strong match).
-gg_resolve_fragment() {
+honk_resolve_fragment() {
     local query="$1"
     local matches id picked
-    matches=$(gg_list_json | jq -r --arg q "$query" '
+    matches=$(honk_list_json | jq -r --arg q "$query" '
         . as $s
         | ($s.id // "") as $id
         | ($s.name // "") as $name
@@ -96,24 +96,24 @@ gg_resolve_fragment() {
     local count
     count=$(printf '%s' "$matches" | grep -c . || true)
     case "$count" in
-        0)  echo "gander: no session matches '$query'" >&2; return 1 ;;
+        0)  echo "honk: no session matches '$query'" >&2; return 1 ;;
         1)  ;; # exactly one
         *)  # multiple — show fzf to disambiguate, then resume the pick.
             if [[ -t 0 ]]; then
                 picked=$(printf '%s\n' "$matches" | cut -f2- \
                     | fzf --prompt="multiple matches for '$query' > ") || return 0
                 id=$(printf '%s' "$picked" | cut -f1)
-                gg_action_resume "$id"
+                honk_action_resume "$id"
                 return $?
             else
-                echo "gander: '$query' matches multiple sessions and no tty for picker:" >&2
+                echo "honk: '$query' matches multiple sessions and no tty for picker:" >&2
                 printf '%s\n' "$matches" | cut -f2- >&2
                 return 2
             fi
             ;;
     esac
     id=$(printf '%s' "$matches" | cut -f2)
-    gg_action_resume "$id"
+    honk_action_resume "$id"
 }
 
 # Render the picker (the main interactive flow).
@@ -121,28 +121,28 @@ gg_resolve_fragment() {
 # Guarded against non-tty invocation: fzf with `--expect` and no controlling
 # tty blocks forever waiting for the user to press one of the expected keys.
 # Detect that up-front and route to non-interactive forms so scripts, CI, and
-# accidental `gander </dev/null` runs don't hang the user's shell.
-gg_pick() {
-    local workdir="${GG_WORKDIR:-$PWD}"
-    local pwd_only="${GG_PWD_ONLY:-1}"
-    local limit="${GG_LIMIT:-$GG_LIMIT_DEFAULT}"
-    local archived="${GG_ARCHIVED:-0}"
+# accidental `honk </dev/null` runs don't hang the user's shell.
+honk_pick() {
+    local workdir="${HONK_WORKDIR:-$PWD}"
+    local pwd_only="${HONK_PWD_ONLY:-1}"
+    local limit="${HONK_LIMIT:-$HONK_LIMIT_DEFAULT}"
+    local archived="${HONK_ARCHIVED:-0}"
 
-    export GG_LIMIT="$limit" GG_PWD_ONLY="$pwd_only" GG_WORKDIR="$workdir" GG_ARCHIVED="$archived"
+    export HONK_LIMIT="$limit" HONK_PWD_ONLY="$pwd_only" HONK_WORKDIR="$workdir" HONK_ARCHIVED="$archived"
 
     if ! command -v fzf >/dev/null 2>&1; then
-        echo "gander: fzf is required for the interactive picker" >&2
+        echo "honk: fzf is required for the interactive picker" >&2
         return 1
     fi
 
     # Safety net 1: require a tty. Without it, fzf --expect will block on stdin
     # forever. Direct the user to the non-fzf forms instead.
     if [[ ! -t 1 || ! -t 2 ]]; then
-        echo "gander: the interactive picker needs a tty." >&2
+        echo "honk: the interactive picker needs a tty." >&2
         echo "    For non-interactive use, try one of:" >&2
-        echo "      gander --list              # pretty text listing" >&2
-        echo "      gander --json              # newline-delimited JSON" >&2
-        echo "      gander -r <fragment>       # fuzzy-resolve & resume" >&2
+        echo "      honk --list              # pretty text listing" >&2
+        echo "      honk --json              # newline-delimited JSON" >&2
+        echo "      honk -r <fragment>       # fuzzy-resolve & resume" >&2
         return 1
     fi
 
@@ -163,7 +163,7 @@ gg_pick() {
         printf '  \033[1m▶  New session here\033[0m  \033[2m— %s\033[0m\t__NEW_HERE__\t—\t—\t—\n' "$PWD"
 
         # 2. Real sessions (newest first). Each row is one human-readable line.
-        gg_list_json | jq -r --arg relbase "$workdir" '
+        honk_list_json | jq -r --arg relbase "$workdir" '
             . as $s
             | ((.working_dir // "") as $wd
                | if ($wd == $relbase or ($wd | startswith($relbase + "/")))
@@ -186,7 +186,7 @@ gg_pick() {
         printf '  \u001b[2m▶  New session in another directory…  (pick one)\u001b[0m\t__PICK_DIR__\t—\t—\t—\n'
 
         # 4. Recent distinct working_dirs (most-recent first), dim & indented.
-        gg_list_json | jq -r '.working_dir' \
+        honk_list_json | jq -r '.working_dir' \
             | awk '!seen[$0]++' | head -6 | while IFS= read -r wd; do
                 [[ -z "$wd" ]] && continue
                 [[ "$wd" == "$PWD" ]] && continue   # skip cwd — already covered
@@ -195,14 +195,14 @@ gg_pick() {
     )
 
     # Preview pane gets the session id from column 2 of the input line.
-    local preview_cmd="bash '$GG_LIB/preview.sh' {2}"
+    local preview_cmd="bash '$HONK_LIB/preview.sh' {2}"
 
     # Ctrl-A toggles between the cwd-only and all-sessions views. We
     # deliberately do not use fzf's become(...) here: the child become
     # process inherits this picker's piped stdout (the $(...) substitution),
-    # so re-invoking gander in the opposite mode would trip its own tty guard.
+    # so re-invoking honk in the opposite mode would trip its own tty guard.
     # Instead ctrl-a is in --expect below; fzf exits with that key and we exec
-    # a fresh gander from the same terminal fds.
+    # a fresh honk from the same terminal fds.
 
     # fzf must stay in the foreground process group of the terminal, or the
     # kernel stops it with SIGTTIN the instant it reads /dev/tty (a frozen
@@ -212,12 +212,12 @@ gg_pick() {
     local tmo=()
     if command -v timeout >/dev/null 2>&1 \
         && timeout --help 2>&1 | grep -q -- '--foreground'; then
-        tmo=(timeout --foreground "${GG_FZF_TIMEOUT:-600}")
+        tmo=(timeout --foreground "${HONK_FZF_TIMEOUT:-600}")
     fi
 
     local selection
     selection=$(
-        GG_PWD="$PWD" \
+        HONK_PWD="$PWD" \
         "${tmo[@]}" \
         fzf --ansi \
             --delimiter=$'\t' \
@@ -237,7 +237,7 @@ gg_pick() {
         local rc=$?
         # 124 == timeout(1) SIGKILL exit code → user-idle timeout fired.
         if (( rc == 124 )); then
-            echo "gander: picker timed out after ${GG_FZF_TIMEOUT:-600}s" >&2
+            echo "honk: picker timed out after ${HONK_FZF_TIMEOUT:-600}s" >&2
         fi
         return 0
     }
@@ -249,37 +249,37 @@ gg_pick() {
     [[ -z "$key" || -z "$raw_line" ]] && return 0
     local j
     j=$(printf '%s\n' "$raw_line" | awk -F'\t' '{print $2}')
-    [[ -z "$j" ]] && { echo "gander: empty id from selection; aborting" >&2; return 1; }
+    [[ -z "$j" ]] && { echo "honk: empty id from selection; aborting" >&2; return 1; }
 
     case "$key" in
         enter)
             case "$j" in
                 __NEW_HERE__)
-                    gg_action_new "$PWD"
+                    honk_action_new "$PWD"
                     ;;
                 __PICK_DIR__)
                     # Offer a quick picker over the recent working_dirs of
                     # past sessions. Plain list — pipe through fzf.
                     local target
-                    target=$(gg_list_json | jq -r '.working_dir' | awk '!seen[$0]++' \
+                    target=$(honk_list_json | jq -r '.working_dir' | awk '!seen[$0]++' \
                              | fzf --prompt='pick a directory for a new session › ' \
                                   --height=50% --layout=reverse --border) || return 0
-                    [[ -n "$target" ]] && gg_action_new "$target"
+                    [[ -n "$target" ]] && honk_action_new "$target"
                     ;;
                 __NEW_AT__*)
-                    gg_action_new "${j#__NEW_AT__}"
+                    honk_action_new "${j#__NEW_AT__}"
                     ;;
                 *)
-                    gg_action_resume "$j"
+                    honk_action_resume "$j"
                     ;;
             esac
             ;;
         ctrl-a)
-            # Reopen the picker in the opposite filter mode. exec so gander
+            # Reopen the picker in the opposite filter mode. exec so honk
             # is replaced; carry over the result cap and working directory.
             local reopen=( --limit "$limit" )
-            if [[ -n "${GG_WORKDIR:-}" ]]; then
-                reopen+=( --working-dir "$GG_WORKDIR" )
+            if [[ -n "${HONK_WORKDIR:-}" ]]; then
+                reopen+=( --working-dir "$HONK_WORKDIR" )
             fi
             if (( pwd_only == 1 )); then
                 reopen+=( --all )
@@ -288,8 +288,8 @@ gg_pick() {
             ;;
         ctrl-f)
             [[ "$j" == __NEW_HERE__ || "$j" == __PICK_DIR__ || "$j" == __NEW_AT__* ]] && {
-                echo "gander: nothing to fork for a synthetic row" >&2; return 0; }
-            gg_action_fork "$j"
+                echo "honk: nothing to fork for a synthetic row" >&2; return 0; }
+            honk_action_fork "$j"
             ;;
         ctrl-n)
             local target_dir="$PWD"
@@ -298,25 +298,25 @@ gg_pick() {
                 __NEW_AT__*)          target_dir="${j#__NEW_AT__}" ;;
                 __PICK_DIR__)         # Ctrl-N on the picker row: same as Enter.
                                         target_dir="$PWD" ;;
-                *)                    target_dir=$(gg_session_working_dir "$j")
+                *)                    target_dir=$(honk_session_working_dir "$j")
                                         [[ -z "$target_dir" ]] && target_dir="$PWD" ;;
             esac
-            gg_action_new "$target_dir"
+            honk_action_new "$target_dir"
             ;;
         ctrl-e)
             [[ "$j" == __NEW_HERE__ || "$j" == __PICK_DIR__ || "$j" == __NEW_AT__* ]] && {
-                echo "gander: nothing to export for a synthetic row" >&2; return 0; }
-            gg_action_export "$j" "./${j}.json"
+                echo "honk: nothing to export for a synthetic row" >&2; return 0; }
+            honk_action_export "$j" "./${j}.json"
             ;;
         ctrl-d)
             [[ "$j" == __NEW_HERE__ || "$j" == __PICK_DIR__ || "$j" == __NEW_AT__* ]] && {
-                echo "gander: nothing to delete for a synthetic row" >&2; return 0; }
-            gg_action_delete "$j"
+                echo "honk: nothing to delete for a synthetic row" >&2; return 0; }
+            honk_action_delete "$j"
             ;;
         *)
             case "$j" in
                 __NEW_HERE__|__PICK_DIR__|__NEW_AT__*) ;;        # no-op for synthetic rows
-                *)                       gg_action_resume "$j" || true ;;
+                *)                       honk_action_resume "$j" || true ;;
             esac
             ;;
     esac
@@ -328,25 +328,25 @@ query=""
 list=0
 json=0
 help=0
-limit="${GG_LIMIT:-$GG_LIMIT_DEFAULT}"
-workdir="${GG_WORKDIR:-}"
-cwd_only="${GG_PWD_ONLY:-1}"
-archived="${GG_ARCHIVED:-0}"
+limit="${HONK_LIMIT:-$HONK_LIMIT_DEFAULT}"
+workdir="${HONK_WORKDIR:-}"
+cwd_only="${HONK_PWD_ONLY:-1}"
+archived="${HONK_ARCHIVED:-0}"
 
 while (($#)); do
     case "$1" in
         -h|--help)        help=1 ;;
         -l|--list)        list=1 ;;
         --json)           json=1 ;;
-        -r|--resume)      mode="resolve"; shift; query="${1:-}"; [[ -z "$query" ]] && { echo "gander: -r needs an argument" >&2; exit 2; } ;;
-        --working-dir)    shift; workdir="${1:-}"; [[ -z "$workdir" ]] && { echo "gander: --working-dir needs an argument" >&2; exit 2; } ;;
-        -w)               shift; workdir="${1:-}"; [[ -z "$workdir" ]] && { echo "gander: -w needs an argument" >&2; exit 2; } ;;
+        -r|--resume)      mode="resolve"; shift; query="${1:-}"; [[ -z "$query" ]] && { echo "honk: -r needs an argument" >&2; exit 2; } ;;
+        --working-dir)    shift; workdir="${1:-}"; [[ -z "$workdir" ]] && { echo "honk: --working-dir needs an argument" >&2; exit 2; } ;;
+        -w)               shift; workdir="${1:-}"; [[ -z "$workdir" ]] && { echo "honk: -w needs an argument" >&2; exit 2; } ;;
         --all)            cwd_only=0 ;;
         --archived)       archived=1 ;;
-        --limit)          shift; limit="${1:-}"; [[ -z "$limit" ]] && { echo "gander: --limit needs an argument" >&2; exit 2; } ;;
+        --limit)          shift; limit="${1:-}"; [[ -z "$limit" ]] && { echo "honk: --limit needs an argument" >&2; exit 2; } ;;
         --no-cwd)         cwd_only=0 ;;
         --)               shift; break ;;
-        -*)               echo "gander: unknown flag: $1" >&2; exit 2 ;;
+        -*)               echo "honk: unknown flag: $1" >&2; exit 2 ;;
         *)                # treat as resume query if standalone
                            mode="resolve"; query="$1" ;;
     esac
@@ -354,21 +354,21 @@ while (($#)); do
 done
 
 if ! [[ "$limit" =~ ^[1-9][0-9]*$ ]]; then
-    echo "gander: --limit must be a positive integer" >&2
+    echo "honk: --limit must be a positive integer" >&2
     exit 2
 fi
 if [[ "$cwd_only" != 0 && "$cwd_only" != 1 ]]; then
-    echo "gander: GG_PWD_ONLY must be 0 or 1" >&2
+    echo "honk: HONK_PWD_ONLY must be 0 or 1" >&2
     exit 2
 fi
 if [[ "$archived" != 0 && "$archived" != 1 ]]; then
-    echo "gander: GG_ARCHIVED must be 0 or 1" >&2
+    echo "honk: HONK_ARCHIVED must be 0 or 1" >&2
     exit 2
 fi
-export GG_LIMIT="$limit"
-export GG_PWD_ONLY="$cwd_only"
-export GG_ARCHIVED="$archived"
-export GG_WORKDIR="$workdir"
+export HONK_LIMIT="$limit"
+export HONK_PWD_ONLY="$cwd_only"
+export HONK_ARCHIVED="$archived"
+export HONK_WORKDIR="$workdir"
 
 if (( help )); then
     usage
@@ -376,21 +376,21 @@ if (( help )); then
 fi
 
 if (( list )); then
-    gg_list_pretty
+    honk_list_pretty
     exit 0
 fi
 
 if (( json )); then
-    gg_list_json
+    honk_list_json
     exit 0
 fi
 
 case "$mode" in
     resolve)
-        [[ -z "$query" ]] && { echo "gander: nothing to resolve" >&2; exit 2; }
-        gg_resolve_fragment "$query"
+        [[ -z "$query" ]] && { echo "honk: nothing to resolve" >&2; exit 2; }
+        honk_resolve_fragment "$query"
         ;;
     pick)
-        gg_pick
+        honk_pick
         ;;
 esac

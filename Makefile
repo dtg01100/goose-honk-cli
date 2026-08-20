@@ -6,10 +6,10 @@ SHELLCHECK ?= shellcheck
 all: check test
 
 syntax:
-	bash -n gander install.sh lib/*.sh tests/*.sh
+	bash -n honk install.sh lib/*.sh tests/*.sh
 
 lint:
-	$(SHELLCHECK) -s bash -x gander install.sh lib/*.sh tests/*.sh
+	$(SHELLCHECK) -s bash -x honk install.sh lib/*.sh tests/*.sh
 
 check: syntax lint
 

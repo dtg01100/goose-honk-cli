@@ -4,7 +4,7 @@
 
 This repository is an independent, third-party companion to goose. It is
 not affiliated with, endorsed by, supported by, or distributed as part of the
-official goose project, AAIF, or Block. The current command is a separate
+official goose project, AAIF, or Block. The current honk command is a separate
 composable CLI and must not be presented as an official goose extension.
 
 ## Why a companion project exists

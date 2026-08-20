@@ -2,7 +2,7 @@
 *.db
 *.sqlite
 *.sqlite3
-gander-debug-rows.tsv
+honk-debug-rows.tsv
 *.log
 *.tmp
 

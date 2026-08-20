@@ -1,4 +1,4 @@
--- Reusable SQL fragments used by gander.
+-- Reusable SQL fragments used by honk.
 -- These are read via `sqlite3 ... <<EOF` style, not by Postgres/Python.
 
 -- Sessions matching a substring of name/id/working_dir, newest first.
