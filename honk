@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# honk — independent third-party fuzzy launcher for goose sessions.
+# Honk — independent third-party fuzzy launcher for goose sessions.
 #
 # Usage:
 #   honk                     interactive picker
@@ -33,7 +33,7 @@ HONK_LIMIT_DEFAULT=50
 
 usage() {
     cat <<'EOF'
-honk — independent third-party fuzzy launcher for goose sessions
+Honk — independent third-party fuzzy launcher for goose sessions
 
 USAGE
   honk                      Interactive picker (default)
