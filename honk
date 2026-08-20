@@ -36,7 +36,7 @@ HONK_LIMIT_DEFAULT=50
 # Resolve the version string. Prefer `git describe` when the checkout is
 # a git working tree so development builds self-identify; otherwise fall
 # back to the baked-in release tag.
-HONK_VERSION="0.1.0"
+HONK_VERSION="0.2.0"
 if command -v git >/dev/null 2>&1 && [[ -d "$HONK_ROOT/.git" ]]; then
     if v=$(git -C "$HONK_ROOT" describe --always --dirty 2>/dev/null) && [[ -n "$v" ]]; then
         HONK_VERSION="$v"
@@ -162,17 +162,25 @@ honk_pick() {
     # filter is enough.
     local cache
     cache=$(mktemp "${TMPDIR:-/tmp}/honk.XXXXXX.json")
-    export HONK_LIST_CACHE="$cache"
+    # Don't export HONK_LIST_CACHE yet — honk_list_json short-circuits to
+    # the cache file whenever the env var is set and the file is readable,
+    # so exporting now would make the initial fetch read the empty mktemp
+    # file (which is readable but zero-length), skip the goose roundtrip,
+    # and leave the cache — and therefore the entire picker — empty.
     # Clean up on shell exit. The resume/fork/new actions exec into goose
     # so the cache is leaked in that path, but only one tempfile per
     # picker invocation — `/tmp` reapers tolerate that.
-    trap 'rm -f "$cache"' EXIT
+    trap 'rm -f "${HONK_LIST_CACHE:-}"' EXIT
     if ! honk_list_json > "$cache"; then
         rm -f "$cache"
-        export HONK_LIST_CACHE=
         echo "honk: failed to fetch session list" >&2
         return 1
     fi
+    # Now that the cache is populated, publish it so the row builder, the
+    # recent-directories strip, fzf's preview pane (which fires on every
+    # keystroke), and the action helpers all share one goose session list
+    # roundtrip instead of re-querying goose on every tick.
+    export HONK_LIST_CACHE="$cache"
 
     # Safety net 1: require a tty. Without it, fzf --expect will block on stdin
     # forever. Direct the user to the non-fzf forms instead.

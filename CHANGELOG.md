@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-20
+
 ### Added
 - `--version` flag reports the current honk version. When the checkout is a
   git working tree, the version is derived from `git describe --always
@@ -36,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not appear in normal text content, and parsed the first column
   with shell parameter expansion so the body is preserved verbatim. Bodies
   like `echo a | b` and `if x | grep y; then …` now render correctly.
+- The interactive picker showed only the synthetic "new session" rows and
+  no real goose sessions, because the picker exported `HONK_LIST_CACHE`
+  *before* the first call to `honk_list_json`. `honk_list_json` treats a
+  readable cache file as authoritative and reads from it; the `mktemp`
+  tempfile is empty but still readable, so the first call short-circuited
+  to an empty result and the picker was left with zero real sessions.
+  The picker now runs the initial fetch first and exports
+  `HONK_LIST_CACHE` only after the cache has been populated, so the row
+  builder, the recent-directories strip, fzf's preview pane, and the
+  action helpers all see the same goose roundtrip instead of a stale
+  empty file.
 
 ### Changed
 - The picker now fetches the session list exactly once per invocation and

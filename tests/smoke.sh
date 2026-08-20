@@ -6,6 +6,14 @@
 
 set -euo pipefail
 
+# Defensively clear any HONK_* env vars leaked into this shell (e.g. from
+# running inside a resumed goose session started via honk). The tests below
+# rely on the documented defaults and on cwd/$PWD; leaked vars would silently
+# change the cwd filter, the grep filter, the picker cache, etc.
+while IFS= read -r var; do
+    unset "$var"
+done < <(env | awk -F= '/^HONK_/ {print $1}')
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -401,5 +409,56 @@ SQL
 else
     echo "skipping preview/tail tests (sqlite3 not installed)"
 fi
+
+# Regression: invoking the interactive picker without a tty must not crash
+# with "cache: unbound variable" from the EXIT trap. The picker sets up a
+# `mktemp` cache as a function-local variable in honk_pick(); if the trap
+# string references that local, bash dereferences it after the function
+# returns and `set -u` aborts the script. Run honk with stdin/stdout
+# redirected so the tty guard inside honk_pick fires, and confirm exit
+# code is 1 (the documented "no tty" failure) — not 2 and not a set -u crash.
+out=$(bash "$ROOT/honk" </dev/null >/dev/null 2>&1; echo "rc=$?")
+[[ "$out" == "rc=1" ]] \
+    || fail "non-tty picker should exit 1 cleanly; got: $out"
+err=$(bash "$ROOT/honk" </dev/null 2>&1; echo "rc=$?")
+[[ "$err" == *"interactive picker needs a tty"* ]] \
+    || fail "non-tty picker should print tty guidance; got: $err"
+[[ "$err" != *"unbound variable"* ]] \
+    || fail "non-tty picker must not trip set -u in its EXIT trap; got: $err"
+pass "non-tty picker exits cleanly without crashing the EXIT trap"
+
+# Regression: honk_pick creates an empty tempfile with mktemp() and then
+# writes the session list into it with the first call to honk_list_json.
+# An earlier version exported HONK_LIST_CACHE *before* that first call, so
+# honk_list_json short-circuited to the empty (but readable) mktemp file,
+# skipped the goose roundtrip entirely, and left the cache — and therefore
+# the entire picker — empty: only the synthetic "new session" rows showed
+# up. End-to-end through honk_pick: the picker populates the cache before
+# its tty guard fires, so we patch the EXIT trap to preserve the cache and
+# assert that it actually contains session JSON after the run. The buggy
+# version leaves the cache at zero bytes.
+captured=$(mktemp "${TMPDIR:-/tmp}/honk-pick-cache.XXXXXX.json")
+# Copy the project into a tmp dir so the patched honk can find its lib/.
+# Patch honk_pick's EXIT trap to copy the cache to $captured before
+# removing it. The trap string is stable across versions; using @
+# as the sed delimiter keeps the `||` in the replacement from colliding
+# with the separator.
+work=$(mktemp -d "${TMPDIR:-/tmp}/honk-pick.XXXXXX")
+cp "$ROOT/honk" "$work/honk"
+cp -r "$ROOT/lib" "$work/lib"
+sed "s@trap 'rm -f \"\\\${HONK_LIST_CACHE:-}\"' EXIT@trap 'cp \"\\\${HONK_LIST_CACHE:-}\" \"${captured}\" 2>/dev/null || true; rm -f \"\\\${HONK_LIST_CACHE:-}\"' EXIT@" \
+    "$work/honk" > "$work/honk.tmp"
+mv "$work/honk.tmp" "$work/honk"
+chmod +x "$work/honk"
+HONK_PWD_ONLY=0 bash "$work/honk" </dev/null >/dev/null 2>&1 || true
+rm -rf "$work"
+cache_bytes=$(wc -c <"$captured" 2>/dev/null || echo 0)
+n=$(grep -c '^{' "$captured" 2>/dev/null || true)
+[[ "$cache_bytes" -gt 1 ]] \
+    || fail "honk_pick should populate its cache; got $cache_bytes bytes (picker was empty under the bug)"
+[[ "$n" -ge 1 ]] \
+    || fail "honk_pick cache should contain at least one session JSON object; got $n: $(cat "$captured")"
+rm -f "$captured"
+pass "honk_pick populates the picker cache end-to-end"
 
 printf '\n\033[1mall smoke tests passed\033[0m\n'
