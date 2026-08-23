@@ -91,8 +91,10 @@ SELECT
         coalesce((
             SELECT group_concat(
                 CASE json_extract(value, '\$.type')
-                    WHEN 'text'    THEN substr(json_extract(value, '\$.text'), 1, ${HONK_PREVIEW_TEXT_CAP})
-                    WHEN 'thinking' THEN '(thinking) ' || substr(json_extract(value, '\$.thinking'), 1, ${HONK_PREVIEW_TEXT_CAP})
+                    WHEN 'text'    THEN substr(json_extract(value, '\$.text'), 1, ${HONK_PREVIEW_TEXT_CAP}) ||
+                        CASE WHEN length(coalesce(json_extract(value, '\$.text'), '')) > ${HONK_PREVIEW_TEXT_CAP} THEN '…' ELSE '' END
+                    WHEN 'thinking' THEN '(thinking) ' || substr(json_extract(value, '\$.thinking'), 1, ${HONK_PREVIEW_TEXT_CAP}) ||
+                        CASE WHEN length(coalesce(json_extract(value, '\$.thinking'), '')) > ${HONK_PREVIEW_TEXT_CAP} THEN '…' ELSE '' END
                     WHEN 'toolRequest'  THEN '[tool:' || coalesce(json_extract(value, '\$.name'), '?') || ']'
                     WHEN 'toolResponse' THEN '[tool-result]'
                     WHEN 'image'    THEN '[image]'
@@ -121,7 +123,17 @@ honk_format_message_rows() {
     local label="" body="" line first rest
     honk_flush_message() {
         [[ -z "$body" ]] && return
-        printf '\n\033[1;36m%s\033[0m\n' "$label"
+        # Pick a color by role so the user can scan user vs assistant
+        # turns in the preview pane and resume tail at a glance. Bold
+        # green for the user keeps their voice distinct from the bold
+        # cyan assistant; the dim cyan fallback handles tool/system
+        # roles that don't get their own case branch.
+        local color_code='2;36'
+        case "$label" in
+            "▸ user")      color_code='1;32' ;;
+            "▸ assistant") color_code='1;36' ;;
+        esac
+        printf '\n\033[%sm%s\033[0m\n' "$color_code" "$label"
         printf '%s' "$body" | fold -s -w 90 | sed 's/^/  /'
     }
     while IFS= read -r line; do

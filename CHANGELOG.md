@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The preview pane and pre-resume tail now color role labels by role so
+  the user can scan a conversation tail at a glance. User turns render
+  in bold green (`\033[1;32m`), assistant turns in bold cyan
+  (`\033[1;36m`), and any other role (tool, system, future roles) falls
+  back to dim cyan (`\033[2;36m`). Previously every `▸ role` label used
+  the same bold cyan, making user and assistant turns visually
+  indistinguishable. The labels themselves remain plain text; the color
+  is applied via ANSI escapes only and is honored by terminals that
+  support it (fzf's preview pane, the resume tail's stdout).
+
+### Fixed
+- The preview pane and pre-resume tail silently truncated long `text`
+  and `thinking` parts at `HONK_PREVIEW_TEXT_CAP` (default 200 bytes)
+  with no visual marker, so the user could not tell whether they were
+  reading the full message or just the first N bytes. The SQL renderer
+  now compares the source length against the cap and appends a `…` to
+  any part that was actually cut, while parts that fit inside the cap
+  render verbatim with no marker. The marker is appended in SQL rather
+  than in the formatter so the truncation signal survives any later
+  folding, wrapping, or piping of the body.
+
 ## [0.2.0] - 2026-08-20
 
 ### Added

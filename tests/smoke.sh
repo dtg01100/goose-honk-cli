@@ -213,6 +213,103 @@ SQL
         || fail "preview missing user role label. Got: $out"
     pass "preview preserves literal '|' in message bodies"
 
+    # Test: texts longer than HONK_PREVIEW_TEXT_CAP get a trailing `…`
+    # so the user knows the message was truncated; texts shorter than
+    # the cap render verbatim with no marker. This relies on the SQL
+    # CASE comparing `length(text) > cap` and appending the ellipsis
+    # only on truncation. The user body is long enough to trip a
+    # 30-char cap; the assistant body is short and must NOT get `…`.
+    sqlite3 "$dbdir/sessions.db" <<'SQL'
+INSERT INTO messages VALUES
+    ('trunc1', 'assistant', '[{"type":"text","text":"short assistant reply"}]', '2026-08-20T17:10:00Z', 500),
+    ('trunc1', 'user',      '[{"type":"text","text":"this is a deliberately very long user message that should be truncated by the cap"}]', '2026-08-20T17:09:00Z', 501);
+SQL
+    trunc_cache=$(mktemp "${TMPDIR:-/tmp}/honk-trunc.XXXXXX.json")
+    printf '%s\n' \
+        '{"id":"trunc1","name":"trunc test","working_dir":"/tmp","updated_at":"2026-08-20T17:10:00Z","message_count":2,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T17:10:00Z"}' \
+        > "$trunc_cache"
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$trunc_cache" \
+        HONK_PREVIEW_TEXT_CAP=30 \
+        bash "$ROOT/lib/preview.sh" trunc1 2>&1) || true
+    rm -f "$trunc_cache"
+    # The assistant body (21 chars) fits within the 30-char cap, so it
+    # must appear unmodified and must NOT be followed by `…`.
+    [[ "$out" == *"short assistant reply"* ]] \
+        || fail "preview dropped a body that fits in the cap. Got: $out"
+    if [[ "$out" == *"short assistant reply…"* ]]; then
+        fail "preview should not mark bodies that fit in the cap. Got: $out"
+    fi
+    # The user body is longer than 30 chars; the first 30 chars should
+    # appear, and the rendered line should end with the truncation
+    # indicator `…` (preceded by the fold/wrap prefix `  `).
+    if [[ "$out" != *"  this is a deliberately very lo…"* ]]; then
+        fail "preview should truncate long bodies with …. Got: $out"
+    fi
+    pass "preview marks truncated text parts with …"
+
+    # Test: thinking parts also get the truncation indicator. The
+    # "(thinking) " prefix must stay on every render; only the body
+    # text is what gets the `…` marker once it overflows the cap.
+    sqlite3 "$dbdir/sessions.db" <<'SQL'
+INSERT INTO messages VALUES
+    ('think1', 'assistant', '[{"type":"thinking","thinking":"a very long internal chain of reasoning that the user probably does not want to read in full every time"}]', '2026-08-20T17:15:00Z', 600);
+SQL
+    think_cache=$(mktemp "${TMPDIR:-/tmp}/honk-think.XXXXXX.json")
+    printf '%s\n' \
+        '{"id":"think1","name":"think test","working_dir":"/tmp","updated_at":"2026-08-20T17:15:00Z","message_count":1,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T17:15:00Z"}' \
+        > "$think_cache"
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$think_cache" \
+        HONK_PREVIEW_TEXT_CAP=40 \
+        bash "$ROOT/lib/preview.sh" think1 2>&1) || true
+    rm -f "$think_cache"
+    [[ "$out" == *"(thinking)"* ]] \
+        || fail "preview dropped the (thinking) prefix. Got: $out"
+    # 40-char cap on the long thinking string: substr(1, 40) grabs the
+    # first 40 bytes of the source, then we append "…" because the
+    # full text is 93 bytes long. The first 40 bytes end mid-word
+    # ("reasoning" finishes at byte 39, byte 40 is the trailing
+    # space before "that"), so the rendered body looks like
+    # "(thinking) a very long internal chain of reasoning …" — the
+    # space before "…" is the byte-40 cut.
+    if [[ "$out" != *"  (thinking) a very long internal chain of reasoning …"* ]]; then
+        fail "preview should truncate long thinking parts with …. Got: $out"
+    fi
+    # The full text is 93 bytes; if truncation were broken we'd see
+    # "every time" or "in full" later in the output.
+    if [[ "$out" == *"every time"* || "$out" == *"in full"* ]]; then
+        fail "preview should not show the untruncated tail of the thinking part. Got: $out"
+    fi
+    pass "preview marks truncated thinking parts with …"
+
+    # Test: role labels are colored by role in the preview. User
+    # turns render in bold green (\033[1;32m), assistant turns in bold
+    # cyan (\033[1;36m), and a tool/system role falls back to dim cyan
+    # (\033[2;36m). The role label must still be plain `▸ user` /
+    # `▸ assistant` text — the color is applied via ANSI escapes only.
+    sqlite3 "$dbdir/sessions.db" <<'SQL'
+INSERT INTO messages VALUES
+    ('role1', 'user',      '[{"type":"text","text":"ask something"}]', '2026-08-20T17:20:00Z', 700),
+    ('role1', 'assistant', '[{"type":"text","text":"answer something"}]', '2026-08-20T17:20:01Z', 701),
+    ('role1', 'tool',      '[{"type":"text","text":"side effect"}]', '2026-08-20T17:20:02Z', 702);
+SQL
+    role_cache=$(mktemp "${TMPDIR:-/tmp}/honk-role.XXXXXX.json")
+    printf '%s\n' \
+        '{"id":"role1","name":"role test","working_dir":"/tmp","updated_at":"2026-08-20T17:20:02Z","message_count":3,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T17:20:02Z"}' \
+        > "$role_cache"
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$role_cache" \
+        bash "$ROOT/lib/preview.sh" role1 2>&1) || true
+    rm -f "$role_cache"
+    # ANSI: \033 is a literal ESC byte in double-quoted bash strings,
+    # so the patterns below match the actual escape sequences the
+    # formatter emits.
+    [[ "$out" == *$'\033[1;32m▸ user'* ]] \
+        || fail "user label should be bold green. Got: $out"
+    [[ "$out" == *$'\033[1;36m▸ assistant'* ]] \
+        || fail "assistant label should be bold cyan. Got: $out"
+    [[ "$out" == *$'\033[2;36m▸ tool'* ]] \
+        || fail "tool/system label should be dim cyan. Got: $out"
+    pass "preview colors role labels by role"
+
     # Test: honk_list_json honors HONK_LIST_CACHE. When the cache is set
     # and readable, honk_list_json reads from it instead of round-tripping
     # to goose. Stub the cache with a known session and verify it
