@@ -100,6 +100,19 @@ if [[ "$out" == *"demo two"* ]]; then
 fi
 pass "cwd filter matches subtree, not prefix"
 
+# Test: -w is the documented short form of --working-dir. The fake
+# goose always populates working_dir, so we just verify the same
+# subtree match applies whether the flag is long or short.
+out=$(cd /tmp && "$ROOT/honk" -w /tmp/demo --list 2>&1)
+[[ "$out" == *"demo one"* ]] || fail "-w /tmp/demo should match demo one. Got: $out"
+if [[ "$out" == *"demo sibling"* ]]; then
+    fail "-w /tmp/demo must not match sibling /tmp/demo-sibling. Got: $out"
+fi
+if [[ "$out" == *"demo two"* ]]; then
+    fail "-w /tmp/demo must not match /tmp. Got: $out"
+fi
+pass "-w short form of --working-dir works"
+
 # Test: --list pads the name column so working_dirs align (pad() fix).
 out=$(cd /tmp && "$ROOT/honk" --all --list 2>&1)
 col_one=$(printf '%s\n' "$out" | grep 'demo one' | grep -bo '/tmp/demo' | head -1 | cut -d: -f1)
@@ -126,6 +139,81 @@ if "$ROOT/honk" --limit 0 --list >/dev/null 2>&1; then
     fail "--limit 0 should be rejected"
 fi
 pass "invalid --limit is rejected"
+
+# Test: the `--flag=value` form must work alongside the space-separated
+# form. The argument parser used to reject `--limit=10` and similar as
+# "unknown flag" because the case arms only matched the bare `--limit`,
+# not `--limit=…`. Modern CLI conventions expect both forms to work.
+out=$(cd /tmp && "$ROOT/honk" --limit=2 --all --list 2>&1)
+n=$(printf '%s\n' "$out" | grep -c '^abc123\|^def456\|^xyz789' || true)
+[[ "$n" -eq 2 ]] || fail "--limit=2 --list should emit 2 sessions, got $n: $out"
+out=$("$ROOT/honk" -w=/tmp/demo --list 2>&1)
+[[ "$out" == *"demo one"* ]] || fail "-w=/tmp/demo should match demo one. Got: $out"
+if [[ "$out" == *"demo sibling"* ]]; then
+    fail "-w=/tmp/demo must not match /tmp/demo-sibling. Got: $out"
+fi
+if [[ "$out" == *"demo two"* ]]; then
+    fail "-w=/tmp/demo must not match /tmp. Got: $out"
+fi
+# Empty value via the = form should be rejected just like the
+# space-separated form.
+out=$("$ROOT/honk" --limit= --list 2>&1) || true
+[[ "$out" == *"--limit needs an argument"* ]] \
+    || fail "--limit= (empty) should be rejected. Got: $out"
+pass "--flag=value syntax works for --limit, -w"
+
+# Test: boolean flags also accept the `--flag=value` form for symmetry
+# with value-taking flags. The value is ignored (the flag is still
+# treated as boolean). This covers --archived, --all, --no-cwd,
+# --no-grep, --help, --version, --list, --json.
+out=$(cd /var && "$ROOT/honk" --archived=1 --all=yes --list 2>&1)
+[[ "$out" == *"demo one"* ]] || fail "--archived=1 --all=yes should include /tmp/demo. Got: $out"
+out=$(cd /var && "$ROOT/honk" --no-cwd=1 --archived=true --list 2>&1)
+[[ "$out" == *"demo one"* ]] || fail "--no-cwd=1 --archived=true should include /tmp/demo. Got: $out"
+out=$(cd /var && "$ROOT/honk" --no-grep=anything --all --list 2>&1)
+[[ -n "$out" ]] || fail "--no-grep=anything should still list sessions. Got: $out"
+out=$("$ROOT/honk" --help=anything 2>&1)
+[[ "$out" == *"USAGE"* ]] || fail "--help=anything should still print help. Got: $out"
+out=$("$ROOT/honk" --version=anything 2>&1)
+[[ "$out" == honk\ * ]] || fail "--version=anything should still print version. Got: $out"
+out=$(cd /tmp && "$ROOT/honk" --list=anything 2>&1)
+[[ "$out" == *"demo one"* ]] || fail "--list=anything should still list. Got: $out"
+out=$(cd /tmp && "$ROOT/honk" --json=anything 2>&1)
+n=$(printf '%s' "$out" | grep -c '^{' || true)
+[[ "$n" -eq 3 ]] || fail "--json=anything should still emit 3 objects. Got: $n: $out"
+pass "--flag=value syntax works for boolean flags"
+
+# Test: multiple positional arguments on the command line must be
+# rejected instead of silently picking the last one. Before the fix,
+# `honk foo bar` resolved 'bar' and ignored 'foo'.
+out=$("$ROOT/honk" foo bar 2>&1) || true
+[[ "$out" == *"unexpected extra argument"* ]] \
+    || fail "multiple positional args should be rejected. Got: $out"
+pass "multiple positional args are rejected"
+
+# Test: invalid HONK_ASCENDING values fail before querying goose. The
+# flag used to be honored whenever the env var was non-empty (so
+# `HONK_ASCENDING=0` and `HONK_ASCENDING=false` would silently enable
+# ascending order); the new contract treats only `1` as on and rejects
+# anything else with a clear error.
+out=$(HONK_ASCENDING=2 "$ROOT/honk" --list 2>&1) || true
+[[ "$out" == *"HONK_ASCENDING must be 0 or 1"* ]] \
+    || fail "invalid HONK_ASCENDING should print a clear error. Got: $out"
+# The non-zero exit code is also part of the contract; a caller that
+# redirects the error to /dev/null still sees a failure.
+if HONK_ASCENDING=2 "$ROOT/honk" --list >/dev/null 2>&1; then
+    fail "HONK_ASCENDING=2 should be rejected"
+fi
+pass "invalid HONK_ASCENDING is rejected"
+
+# HONK_ASCENDING=0 must not silently enable ascending (regression for
+# the old `[[ -n "$ascending" ]]` check).
+out=$(cd /tmp && HONK_ASCENDING=0 "$ROOT/honk" --json 2>&1)
+[[ -n "$out" ]] || fail "HONK_ASCENDING=0 should still produce output"
+if [[ "$out" == *"syntax error"* ]]; then
+    fail "HONK_ASCENDING=0 must not pass --ascending to goose. Got: $out"
+fi
+pass "HONK_ASCENDING=0 does not enable ascending order"
 
 # Test: --json emits 3 objects (run under /tmp so cwd filter lets them through)
 out=$(cd /tmp && "$ROOT/honk" --json 2>&1)
@@ -349,6 +437,91 @@ SQL
         || fail "honk_session_working_dir should read from cache. Got: $out"
     rm -f "$cache_file"
     pass "honk_session_working_dir reads from the cache"
+
+    # Regression: honk_db_path must preserve internal whitespace in the
+    # session DB path returned by `goose info`. The previous
+    # `${path//[[:space:]]/}` strip removed ALL whitespace, which would
+    # corrupt any path containing a space (e.g. under
+    # "/home/me/My Projects/..."). The fix uses awk's trailing-only
+    # strip (`gsub(/[[:space:]]+$/, "")`) so leading/trailing padding is
+    # trimmed but internal spaces survive.
+    out=$(printf 'Sessions DB:   /home/me/My Projects/sessions.db   \n' \
+        | awk -F': *' '/Sessions DB/ {gsub(/[[:space:]]+$/, ""); print $2; exit}')
+    [[ "$out" == "/home/me/My Projects/sessions.db" ]] \
+        || fail "honk_db_path parser must preserve internal whitespace. Got: [$out]"
+    pass "honk_db_path preserves internal whitespace in the session DB path"
+
+    # Regression: a session whose working_dir is missing or null in the
+    # session list must not surface as the literal string "null" in any
+    # downstream pipeline. `honk_session_working_dir` is the most
+    # security-sensitive consumer (it gates a `cd`), so it must return
+    # empty (not "null") so the `[[ -z "$wd" ]]` guard in the resume
+    # and fork actions still triggers the documented cwd fallback.
+    cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-nullwd.XXXXXX.json")
+    printf '%s\n' \
+        '{"id":"missing1","name":"missing working_dir"}' \
+        '{"id":"explicit1","name":"explicit null","working_dir":null}' \
+        > "$cache_file"
+    out=$(HONK_LIST_CACHE="$cache_file" \
+        bash -c 'source "$1/lib/actions.sh"; honk_session_working_dir missing1' _ "$ROOT")
+    [[ -z "$out" ]] \
+        || fail "honk_session_working_dir should return empty for missing working_dir (got: $out)"
+    [[ "$out" != "null" ]] \
+        || fail "honk_session_working_dir must not return literal 'null' for missing working_dir"
+    out=$(HONK_LIST_CACHE="$cache_file" \
+        bash -c 'source "$1/lib/actions.sh"; honk_session_working_dir explicit1' _ "$ROOT")
+    [[ -z "$out" ]] \
+        || fail "honk_session_working_dir should return empty for null working_dir (got: $out)"
+    [[ "$out" != "null" ]] \
+        || fail "honk_session_working_dir must not return literal 'null' for null working_dir"
+    rm -f "$cache_file"
+    pass "honk_session_working_dir returns empty (not 'null') for missing/null working_dir"
+
+    # Regression: the preview pane's header must not print the literal
+    # string "null" for sessions whose working_dir, created_at, or
+    # updated_at are missing or null. The fake goose emits working_dir
+    # for every session so we exercise this through a hand-crafted
+    # cache that omits those fields entirely.
+    cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-preview-null.XXXXXX.json")
+    printf '%s\n' \
+        '{"id":"nullmeta","name":"null meta"}' \
+        > "$cache_file"
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$cache_file" \
+        bash "$ROOT/lib/preview.sh" nullmeta 2>&1) || true
+    rm -f "$cache_file"
+    if [[ "$out" == *"working_dir: null"* || "$out" == *"created:    null"* \
+       || "$out" == *"updated:    null"* ]]; then
+        fail "preview header must not render literal 'null' for missing fields. Got: $out"
+    fi
+    [[ "$out" == *"nullmeta"* ]] \
+        || fail "preview header should still render the session name. Got: $out"
+    pass "preview header renders empty (not 'null') for missing metadata fields"
+
+    # Regression: a message with a non-JSON content_json (a real-data
+    # possibility if a partial row lands in the DB) used to leak sqlite's
+    # "malformed JSON" stderr warning into the preview pane, because
+    # fzf captures both stdout and stderr for the preview and we did
+    # not redirect sqlite's stderr. The fix pins `2>/dev/null` on the
+    # sqlite invocation so the row is silently dropped (the surrounding
+    # coalesce keeps the query valid) and the warning never reaches the
+    # preview.
+    sqlite3 "$dbdir/sessions.db" <<'SQL'
+INSERT INTO messages VALUES
+    ('bad1', 'user', 'not valid json', '2026-08-20T18:00:00Z', 900);
+SQL
+    bad_cache=$(mktemp "${TMPDIR:-/tmp}/honk-bad.XXXXXX.json")
+    printf '%s\n' \
+        '{"id":"bad1","name":"bad json","working_dir":"/tmp","updated_at":"2026-08-20T18:00:00Z","message_count":1,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T18:00:00Z"}' \
+        > "$bad_cache"
+    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$bad_cache" \
+        bash "$ROOT/lib/preview.sh" bad1 2>&1) || true
+    rm -f "$bad_cache"
+    if [[ "$out" == *"malformed JSON"* || "$out" == *"Error near"* ]]; then
+        fail "preview must not leak sqlite stderr on malformed JSON. Got: $out"
+    fi
+    [[ "$out" == *"bad1"* ]] \
+        || fail "preview should still render the session header. Got: $out"
+    pass "preview silently drops rows with malformed content_json"
 
     # Test: resume echoes the conversation tail before handing off to goose.
     out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_TAIL=4 bash -c '
