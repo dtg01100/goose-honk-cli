@@ -20,10 +20,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/preview.sh"
 # is available (set via $HONK_LIST_CACHE). honk_list_json emits NDJSON
 # (one object per line), so we `select(.id == $id)` per line instead of
 # `.[] | select(.id == $id)`.
+#
+# `// ""` ensures a missing/null working_dir renders as empty (not the
+# literal string "null" that `jq -r` would emit), so callers' `[[ -z
+# "$wd" ]]` guards stay correct for sessions without a working_dir.
 honk_session_working_dir() {
     local sid="$1"
     honk_list_json 2>/dev/null \
-        | jq -r --arg id "$sid" 'select(.id == $id) | .working_dir' \
+        | jq -r --arg id "$sid" 'select(.id == $id) | .working_dir // ""' \
         || true
 }
 

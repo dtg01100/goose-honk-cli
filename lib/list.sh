@@ -8,7 +8,7 @@
 #
 # Tunable via env:
 #   HONK_LIMIT     (default 50)
-#   HONK_ASCENDING (default 0)
+#   HONK_ASCENDING (default 0; set to 1 to request ascending order from goose)
 #   HONK_ARCHIVED  (default 0; set to 1 to include archived sessions)
 #   HONK_PWD_ONLY  (default 1; set to 0 to include all sessions)
 #   HONK_WORKDIR   (override the filter; default: $PWD)
@@ -85,14 +85,23 @@ SELECT DISTINCT session_id FROM messages WHERE content_json LIKE '%${q}%' ESCAPE
 SQL
 }
 
-# Resolve the goose sessions DB path. Honor $GOOSE_SHARED_SESSION_DIR if the
-# user has one, but otherwise derive from goose info.
+# Resolve the goose sessions DB path. We let goose itself report the path
+# (via `goose info`) so we honor every override goose itself honors,
+# including $GOOSE_SHARED_SESSION_DIR. The fallback only kicks in when
+# goose can't tell us, in which case we derive the well-known XDG
+# location directly — a user who has $GOOSE_SHARED_SESSION_DIR set
+# without `goose info` available should not be silently misled.
 honk_db_path() {
     # Prefer goose's own idea of the path. If `goose info` ever changes shape,
     # we fall back to the well-known XDG location.
+    #
+    # `gsub(/[[:space:]]+$/, "")` trims only trailing whitespace (the common
+    # case where `goose info` ends the value with a newline or padding).
+    # We deliberately do NOT strip internal whitespace, since the user's
+    # session DB path can legitimately contain spaces (e.g. under
+    # "/home/me/My Projects/...").
     local path
-    if path=$(goose info 2>/dev/null | awk -F': *' '/Sessions DB/ {print $2; exit}'); then
-        path="${path//[[:space:]]/}"
+    if path=$(goose info 2>/dev/null | awk -F': *' '/Sessions DB/ {gsub(/[[:space:]]+$/, ""); print $2; exit}'); then
         if [[ -n "$path" && -r "$path" ]]; then
             printf '%s\n' "$path"
             return 0
@@ -134,7 +143,7 @@ honk_list_json() {
     fi
 
     local limit="${HONK_LIMIT:-50}"
-    local ascending="${HONK_ASCENDING:-}"
+    local ascending="${HONK_ASCENDING:-0}"
     local pwd_only="${HONK_PWD_ONLY:-1}"
     local workdir="${HONK_WORKDIR:-$PWD}"
 
@@ -150,13 +159,17 @@ honk_list_json() {
         echo "honk: HONK_ARCHIVED must be 0 or 1" >&2
         return 2
     fi
+    if [[ "$ascending" != 0 && "$ascending" != 1 ]]; then
+        echo "honk: HONK_ASCENDING must be 0 or 1" >&2
+        return 2
+    fi
     command -v goose >/dev/null 2>&1 || {
         echo "honk: goose is required to list sessions" >&2
         return 1
     }
 
     local args=( -f json -l "$limit" )
-    [[ -n "$ascending" ]] && args+=( --ascending )
+    [[ "$ascending" == "1" ]] && args+=( --ascending )
 
     local raw
     raw=$(goose session list "${args[@]}" 2>/dev/null) || {
@@ -187,11 +200,8 @@ honk_list_json() {
     if [[ "${HONK_ARCHIVED:-0}" != "1" ]]; then
         jq_filter+=" | select(.archived_at == null)"
     fi
-    # Sort updated_at desc if not already (goose default is desc).
-    if [[ -z "$ascending" ]]; then
-        # goose already returns desc — keep stable.
-        :
-    fi
+    # goose already returns newest-first by default; HONK_ASCENDING toggles
+    # the --ascending flag above and we don't re-sort here.
     jq_filter+=" | @json"
 
     # Apply the cwd/archive filters in jq, then layer the grep filter
