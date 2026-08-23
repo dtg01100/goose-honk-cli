@@ -38,15 +38,21 @@ fi
 # support it).
 honk_preview_header() {
     local id="$1" meta_json="$2"
-    printf '\033[1m%s\033[0m  \033[2m(id: %s)\033[0m\n' \
-        "$(printf '%s' "$meta_json" | jq -r '.name // "(unnamed)"')" \
-        "$id"
-    printf '  \033[2mworking_dir:\033[0m %s\n'  "$(printf '%s' "$meta_json" | jq -r '.working_dir')"
-    printf '  \033[2mcreated:\033[0m    %s\n'    "$(printf '%s' "$meta_json" | jq -r '.created_at')"
-    printf '  \033[2mupdated:\033[0m    %s\n'    "$(printf '%s' "$meta_json" | jq -r '.updated_at')"
-    printf '  \033[2mmessages:\033[0m   %s   \033[2mcost:\033[0m $%s\n' \
-        "$(printf '%s' "$meta_json" | jq -r '.message_count // 0')" \
-        "$(printf '%s' "$meta_json" | jq -r '.accumulated_cost // 0')"
+    # Use // "" fallbacks so missing/null fields render as empty (not the
+    # literal string "null" that `jq -r` emits for null/missing values).
+    local name working_dir created updated msg_count cost
+    name=$(printf '%s' "$meta_json"       | jq -r '.name              // "(unnamed)"')
+    working_dir=$(printf '%s' "$meta_json" | jq -r '.working_dir       // ""')
+    created=$(printf '%s' "$meta_json"     | jq -r '.created_at        // ""')
+    updated=$(printf '%s' "$meta_json"     | jq -r '.updated_at        // ""')
+    msg_count=$(printf '%s' "$meta_json"   | jq -r '.message_count     // 0')
+    cost=$(printf '%s' "$meta_json"        | jq -r '.accumulated_cost  // 0')
+
+    printf '\033[1m%s\033[0m  \033[2m(id: %s)\033[0m\n' "$name" "$id"
+    printf '  \033[2mworking_dir:\033[0m %s\n'  "$working_dir"
+    printf '  \033[2mcreated:\033[0m    %s\n'    "$created"
+    printf '  \033[2mupdated:\033[0m    %s\n'    "$updated"
+    printf '  \033[2mmessages:\033[0m   %s   \033[2mcost:\033[0m $%s\n' "$msg_count" "$cost"
     printf '\n\033[1m── last %s messages ────────────────────────────\033[0m\n' \
         "$HONK_PREVIEW_MSG_LIMIT"
 }
@@ -73,7 +79,14 @@ honk_render_messages_rows() {
     # not shredded by the row formatter's `IFS='|' read`. The unit separator
     # is a non-printable control character that won't appear in normal
     # text content.
-    sqlite3 -separator $'\x1f' "$db" <<SQL
+    #
+    # `2>/dev/null` swallows per-row sqlite warnings (e.g. "malformed JSON"
+    # when content_json in a row isn't a valid JSON array — a real-data
+    # possibility if a future goose schema change lets a partial row land
+    # in the DB). Without it, fzf captures stderr alongside stdout and the
+    # warning leaks into the preview pane; with it, the row is silently
+    # dropped (the surrounding `coalesce(…, '')` keeps the query valid).
+    sqlite3 -separator $'\x1f' "$db" 2>/dev/null <<SQL
 WITH ranked AS (
     SELECT m.role, m.content_json, m.created_timestamp
     FROM messages AS m

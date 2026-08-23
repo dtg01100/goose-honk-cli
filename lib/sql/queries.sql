@@ -35,6 +35,14 @@ LIMIT :limit;
 -- {type:"thinking",thinking:"…"} or {type:"toolRequest",…} etc. We collapse
 -- all text/thinking parts to plain text; tool calls and results are surfaced
 -- as `[tool:<name>]` placeholders so the preview stays readable.
+--
+-- This is a reference view of the SQL embedded in lib/preview.sh (which is
+-- the source of truth). The runtime query applies per-part text truncation
+-- (`HONK_PREVIEW_TEXT_CAP`) and appends `…` to truncated text and thinking
+-- parts; the reference below shows the untruncated shape. The preview pane
+-- itself falls back to `[other]` for any JSON-part type this list does not
+-- enumerate (e.g. toolConfirmationRequest, resource), so future schema
+-- additions do not require code changes to keep rendering.
 .message_text
 WITH parts(role, text) AS (
     SELECT
@@ -47,9 +55,7 @@ WITH parts(role, text) AS (
                     WHEN 'toolRequest'    THEN '[tool:' ||
                         coalesce(json_extract(value, '$.name'), '?') || ']'
                     WHEN 'toolResponse'   THEN '[tool-result]'
-                    WHEN 'toolConfirmationRequest' THEN '[tool-confirm]'
                     WHEN 'image'     THEN '[image]'
-                    WHEN 'resource'  THEN '[resource]'
                     ELSE '[other]'
                 END, char(10))
              FROM json_each(m.content_json)),
