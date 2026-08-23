@@ -7,11 +7,13 @@
 #   honk --list              pretty text table
 #   honk --json              newline-delimited JSON
 #   honk --working-dir DIR   restrict picker to a directory subtree
+#   honk -w DIR              short form of --working-dir
 #   honk --all               don't filter by cwd
 #   honk --no-cwd            don't filter by cwd (alias for --all)
 #   honk --archived          include archived sessions
 #   honk --limit N           (default: 50)
 #   honk --grep <query>      filter picker to sessions whose messages contain query
+#   honk --no-grep           clear an inherited grep filter
 #   honk --version           print honk version and exit
 #   honk --help
 #
@@ -54,13 +56,17 @@ USAGE
   honk --list               Pretty text list of recent sessions
   honk --json               Newline-delimited JSON, one object per session
   honk --working-dir DIR    Restrict picker to sessions in DIR (default: $PWD)
+  honk -w DIR               Short form of --working-dir
   honk --all                Don't filter by cwd
   honk --no-cwd             Don't filter by cwd (alias for --all)
   honk --archived           Include archived sessions
   honk --limit N            Limit results (default: 50)
   honk --grep QUERY         Restrict picker to sessions whose messages contain QUERY
+  honk --no-grep            Clear an inherited grep filter
   honk --version            Print honk version and exit
+  honk -V                   Short form of --version
   honk --help               Show this help
+  honk -h                   Short form of --help
 
 PICKER KEY BINDINGS
   Enter         Resume selected session (cd to its working_dir)
@@ -110,7 +116,7 @@ honk_resolve_fragment() {
            elif $wd   | contains($q) then 4
            else null end) as $rank
         | select($rank != null)
-        | ([$rank, .id, .name // "", .working_dir] | @tsv)
+        | ([$rank, .id, .name // "", .working_dir // ""] | @tsv)
     ' | sort -n)
 
     local count
@@ -119,10 +125,18 @@ honk_resolve_fragment() {
         0)  echo "honk: no session matches '$query'" >&2; return 1 ;;
         1)  ;; # exactly one
         *)  # multiple — show fzf to disambiguate, then resume the pick.
-            if [[ -t 0 ]]; then
+            # Test for an interactive terminal (-t 1 + -t 2) the same way
+            # honk_pick does. -t 0 (stdin) is the wrong check: piping
+            # stdin but rendering on a tty is a perfectly valid picker
+            # invocation, and a tty stdin with non-tty stdout (e.g.
+            # `honk -r demo | less`) is not.
+            if [[ -t 1 && -t 2 ]]; then
                 picked=$(printf '%s\n' "$matches" | cut -f2- \
                     | fzf --prompt="multiple matches for '$query' > ") || return 0
                 id=$(printf '%s' "$picked" | cut -f1)
+                if [[ -z "$id" ]]; then
+                    return 0
+                fi
                 honk_action_resume "$id"
                 return $?
             else
@@ -233,7 +247,10 @@ honk_pick() {
         printf '  \u001b[2m▶  New session in another directory…  (pick one)\u001b[0m\t__PICK_DIR__\t—\t—\t—\n'
 
         # 4. Recent distinct working_dirs (most-recent first), dim & indented.
-        honk_list_json | jq -r '.working_dir' \
+        # `// ""` drops the literal "null" that `jq -r` would emit for
+        # sessions missing/null working_dir, so the `[[ -z "$wd" ]]`
+        # guard below stays correct.
+        honk_list_json | jq -r '.working_dir // ""' \
             | awk '!seen[$0]++' | head -6 | while IFS= read -r wd; do
                 [[ -z "$wd" ]] && continue
                 [[ "$wd" == "$PWD" ]] && continue   # skip cwd — already covered
@@ -264,7 +281,6 @@ honk_pick() {
 
     local selection
     selection=$(
-        HONK_PWD="$PWD" \
         "${tmo[@]}" \
         fzf --ansi \
             --delimiter=$'\t' \
@@ -307,8 +323,10 @@ honk_pick() {
                 __PICK_DIR__)
                     # Offer a quick picker over the recent working_dirs of
                     # past sessions. Plain list — pipe through fzf.
+                    # `// ""` keeps sessions without a working_dir from
+                    # surfacing as a literal "null" entry in the picker.
                     local target
-                    target=$(honk_list_json | jq -r '.working_dir' | awk '!seen[$0]++' \
+                    target=$(honk_list_json | jq -r '.working_dir // ""' | awk '!seen[$0]++' \
                              | fzf --prompt='pick a directory for a new session › ' \
                                   --height=50% --layout=reverse --border) || return 0
                     [[ -n "$target" ]] && honk_action_new "$target"
@@ -367,7 +385,9 @@ honk_pick() {
             case "$j" in
                 __NEW_HERE__)         target_dir="$PWD" ;;
                 __NEW_AT__*)          target_dir="${j#__NEW_AT__}" ;;
-                __PICK_DIR__)         # Ctrl-N on the picker row: same as Enter.
+                __PICK_DIR__)         # Picker row has no own dir; fall back
+                                        # to $PWD. Enter on this row opens
+                                        # the directory picker instead.
                                         target_dir="$PWD" ;;
                 *)                    target_dir=$(honk_session_working_dir "$j")
                                         [[ -z "$target_dir" ]] && target_dir="$PWD" ;;
@@ -409,21 +429,38 @@ grep_query="${HONK_GREP:-}"
 while (($#)); do
     case "$1" in
         -h|--help)        help=1 ;;
+        -h=*|--help=*)    help=1 ;;   # ignore =value; flag is boolean
         -V|--version)     version=1 ;;
+        -V=*|--version=*) version=1 ;;   # ignore =value; flag is boolean
         -l|--list)        list=1 ;;
+        -l=*|--list=*)    list=1 ;;   # ignore =value; flag is boolean
         --json)           json=1 ;;
+        --json=*)         json=1 ;;   # ignore =value; flag is boolean
         -r|--resume)      mode="resolve"; shift; query="${1:-}"; [[ -z "$query" ]] && { echo "honk: -r needs an argument" >&2; exit 2; } ;;
+        -r=*)             mode="resolve"; query="${1#*=}"; [[ -z "$query" ]] && { echo "honk: -r needs an argument" >&2; exit 2; } ;;
         --working-dir)    shift; workdir="${1:-}"; [[ -z "$workdir" ]] && { echo "honk: --working-dir needs an argument" >&2; exit 2; } ;;
+        --working-dir=*)  workdir="${1#*=}"; [[ -z "$workdir" ]] && { echo "honk: --working-dir needs an argument" >&2; exit 2; } ;;
         -w)               shift; workdir="${1:-}"; [[ -z "$workdir" ]] && { echo "honk: -w needs an argument" >&2; exit 2; } ;;
+        -w=*)             workdir="${1#*=}"; [[ -z "$workdir" ]] && { echo "honk: -w needs an argument" >&2; exit 2; } ;;
         --all)            cwd_only=0 ;;
+        --all=*)          cwd_only=0 ;;   # ignore =value; flag is boolean
         --archived)       archived=1 ;;
+        --archived=*)     archived=1 ;;   # ignore =value; flag is boolean
         --limit)          shift; limit="${1:-}"; [[ -z "$limit" ]] && { echo "honk: --limit needs an argument" >&2; exit 2; } ;;
+        --limit=*)        limit="${1#*=}"; [[ -z "$limit" ]] && { echo "honk: --limit needs an argument" >&2; exit 2; } ;;
         --grep)           shift; grep_query="${1:-}"; [[ -z "$grep_query" ]] && { echo "honk: --grep needs a non-empty argument (use --no-grep to clear)" >&2; exit 2; } ;;
+        --grep=*)         grep_query="${1#*=}"; [[ -z "$grep_query" ]] && { echo "honk: --grep needs a non-empty argument (use --no-grep to clear)" >&2; exit 2; } ;;
         --no-grep)        grep_query="" ;;
+        --no-grep=*)      grep_query="" ;;   # ignore =value; flag is boolean
         --no-cwd)         cwd_only=0 ;;
+        --no-cwd=*)       cwd_only=0 ;;   # ignore =value; flag is boolean
         --)               shift; break ;;
         -*)               echo "honk: unknown flag: $1" >&2; exit 2 ;;
         *)                # treat as resume query if standalone
+                           if [[ -n "$query" ]]; then
+                               echo "honk: unexpected extra argument: $1" >&2
+                               exit 2
+                           fi
                            mode="resolve"; query="$1" ;;
     esac
     shift || true
