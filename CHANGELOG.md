@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `-w DIR` is now documented in the `--help` output and README as the
+  short form of `--working-dir`.
+- The `-V` and `-h` short flags are now documented in the `--help`
+  output alongside their long forms (`--version`, `--help`).
+- The `--flag=value` form is now accepted for every flag (boolean or
+  value-taking) so users don't need to remember which flags accept `=`
+  and which don't. The value is ignored for boolean flags (`--all`,
+  `--archived`, `--no-cwd`, `--no-grep`, `--help`, `--version`,
+  `--list`, `--json`); for value-taking flags (`-r`, `--working-dir`,
+  `-w`, `--limit`, `--grep`) the same non-empty validation as the
+  space-separated form applies.
+
 ### Changed
+- The header comment in `lib/list.sh` and the README table now spell
+  out the `HONK_ASCENDING=0|1` contract instead of "unset".
+- `honk_resolve_fragment` now checks for an interactive terminal with
+  `-t 1 && -t 2` (stdout + stderr) instead of `-t 0` (stdin), so the
+  picker is offered when stdout is a tty even if stdin has been
+  redirected, and refused when stdout has been piped even if stdin is
+  a tty. This matches `honk_pick`'s tty guard.
 - The preview pane and pre-resume tail now color role labels by role so
   the user can scan a conversation tail at a glance. User turns render
   in bold green (`\033[1;32m`), assistant turns in bold cyan
@@ -19,6 +39,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   support it (fzf's preview pane, the resume tail's stdout).
 
 ### Fixed
+- `jq -r '.field'` without a `// ""` fallback emitted the literal string
+  `null` for sessions whose `working_dir`, `created_at`, or `updated_at`
+  was missing or null. The preview header rendered `null` next to
+  `working_dir:` instead of an empty value, the recent-dirs strip in the
+  picker offered `__NEW_AT__null` as a row, the `__PICK_DIR__` directory
+  picker offered `null` as a target, and `honk_session_working_dir`
+  returned `null` instead of empty (breaking the documented `[[ -z "$wd"
+  ]]` guard downstream). All four call sites now coalesce missing/null
+  values to empty strings.
+- `HONK_ASCENDING` was treated as truthy whenever the env var was
+  non-empty, so `HONK_ASCENDING=0` and `HONK_ASCENDING=false` silently
+  enabled ascending order. The new contract treats only `1` as on and
+  rejects anything else with a clear error message. The header comment
+  in `lib/list.sh` and the README table now document the contract.
+- The argument parser only accepted the space-separated form
+  (`--limit 10`, `--grep foo`, `--working-dir /tmp`, `-w /tmp`) and
+  rejected the `--flag=value` form as "unknown flag". Both forms now
+  work for every flag that takes a value (`-r`, `--working-dir`/`-w`,
+  `--limit`, `--grep`); an empty value via `=` is rejected with the
+  same "needs an argument" error as the space-separated form.
+- The preview pane leaked sqlite's "malformed JSON" stderr warning
+  into the rendered preview when a message's `content_json` column
+  wasn't valid JSON (a real-data possibility if a partial row lands in
+  the DB after a crash or schema change). The fix pins `2>/dev/null`
+  on the sqlite invocation so the row is silently dropped (the
+  surrounding `coalesce(…, '')` keeps the query valid) and the warning
+  never reaches the preview.
+- `honk_db_path` stripped ALL whitespace from the path returned by
+  `goose info`, which corrupted any session DB path containing a space
+  (e.g. under `/home/me/My Projects/...`). The fix uses awk's
+  trailing-only strip (`gsub(/[[:space:]]+$/, "")`) so leading/trailing
+  padding from `goose info` is trimmed but internal spaces survive.
+- The picker exported `HONK_PWD="$PWD"` to fzf on every invocation but
+  nothing read it. The dead env-var pass is removed.
+- The argument parser silently dropped extra positional arguments
+  (`honk foo bar` resolved `bar` and ignored `foo`). The parser now
+  reports `honk: unexpected extra argument` so users catch typos
+  instead of resolving the wrong session.
+- `honk_resolve_fragment`'s multi-match disambiguation called
+  `honk_action_resume` even when the user pressed Esc on the fzf
+  picker, which left an empty `--session-id` for goose to error on.
+  The picker now bails cleanly when no row was selected.
+- The comment above the `__PICK_DIR__` arm of Ctrl-N claimed the
+  behavior was "same as Enter", which is misleading: Enter opens the
+  directory picker while Ctrl-N silently falls back to `$PWD`. The
+  comment now spells out the fallback.
 - The preview pane and pre-resume tail silently truncated long `text`
   and `thinking` parts at `HONK_PREVIEW_TEXT_CAP` (default 200 bytes)
   with no visual marker, so the user could not tell whether they were
@@ -34,9 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `--version` flag reports the current honk version. When the checkout is a
   git working tree, the version is derived from `git describe --always
-  --dirty`, so development builds self-identify (e.g. `0.1.0-3-g4f2a1b-dirty`).
+  --dirty`, so development builds self-identify (e.g. `0.2.0-3-g4f2a1b-dirty`).
   Source tarballs and non-git checkouts fall back to the baked-in release
-  tag (`0.1.0`).
+  tag (`0.2.0`).
 - `--grep <query>` and `HONK_GREP=<query>` filter the picker to sessions
   whose messages contain the query (case-insensitive substring match
   against the SQLite `messages.content_json` field). Useful for finding

@@ -94,6 +94,7 @@ honk -r CI                   # fuzzy-resume a matching session
 honk --list                  # pretty text listing
 honk --json                  # one JSON object per line
 honk --working-dir ~/p      # restrict results to ~/p and its children
+honk -w ~/p                  # short form of --working-dir
 honk --all                   # include sessions outside the cwd subtree
 honk --no-cwd                # alias for --all
 honk --archived              # include archived sessions
@@ -101,7 +102,6 @@ honk --limit 100             # cap the result count (default: 50)
 honk --grep TODO             # only sessions whose messages contain "TODO"
 honk --version               # print honk version and exit
 honk --help                  # full usage
-honk --help
 ```
 
 ### Picker keys
@@ -131,7 +131,7 @@ options override them:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `HONK_LIMIT` | `50` | Maximum sessions to request |
-| `HONK_ASCENDING` | unset | Add goose’s ascending-order option when set |
+| `HONK_ASCENDING` | `0` | Set to `1` to request ascending order from goose |
 | `HONK_ARCHIVED` | `0` | Include archived sessions when set to `1` |
 | `HONK_PWD_ONLY` | `1` | Filter to the cwd subtree; set to `0` for all sessions |
 | `HONK_WORKDIR` | current directory | Override the cwd filter base |
