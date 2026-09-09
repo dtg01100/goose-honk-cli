@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- The fzf preview pane no longer renders message bodies, and the
+  pre-resume / pre-fork "conversation tail" is gone. Both features
+  read goose's private `messages.content_json` schema directly (with
+  per-part text/thinking/tool extraction, truncation, role-label
+  coloring, and malformed-JSON handling), which silently broke on any
+  goose release that reshaped the messages table. The picker now shows
+  session metadata only — name, working directory, created/updated
+  timestamps, message count, accumulated cost — sourced from the same
+  `goose session list --format json` snapshot the picker already uses,
+  so the preview stays decoupled from the storage layer. The
+  accompanying knobs (`HONK_RESUME_PREVIEW`, `HONK_RESUME_TAIL`,
+  `HONK_PREVIEW_TEXT_CAP`) and the message-related fragments in
+  `lib/sql/queries.sql` are also removed.
+- The `--grep` / `--no-grep` CLI flags, the `HONK_GREP` env var, the
+  `Ctrl-G` keybinding, the `honk_apply_grep` and
+  `honk_grep_session_ids` helpers, `honk_db_path`, and the
+  schema-touching portion of `lib/sql/queries.sql` are removed. The
+  grep filter was the last honk feature that read goose's private
+  `messages` table directly; with it gone, honk only depends on
+  documented public interfaces (`goose session list --format json` and
+  the `goose session --resume` / `--fork` / `export` / `remove`
+  subcommands). Any goose release can change the storage layer or
+  the messages table shape without affecting honk.
+- `sqlite3` is no longer a runtime dependency.
+
+### Added
+- Per-launch provider/model override via `--provider NAME` / `--model NAME`
+  on the honk CLI, matching `HONK_PROVIDER` / `HONK_MODEL` env vars, and a
+  new **Ctrl-P** picker binding that opens a nested fzf sub-picker to pick
+  a provider (from the cached session list, sorted by frequency, plus a
+  small static fallback for discoverability) and a model (from the cached
+  models for that provider). The override applies to the next launch and
+  is reflected in the picker prompt (e.g.
+  `goose [anthropic/claude-3-5-sonnet-latest] ›`). Honk does not know or
+  enumerate every (provider, model) pair — it only reads the documented
+  `provider_name` and `model_config.model_name` fields off the public
+  `goose session list --format json` shape, and passes the chosen values
+  through `goose session`'s own `--provider` / `--model` flags (documented
+  as "Override the GOOSE_PROVIDER environment variable for this run").
+  Goose itself handles the provider/model compatibility check; if the user
+  picks an unsupported pair, goose rejects it at exec time.
+- The metadata preview pane now shows `provider:` and `model:` lines for
+  each session, so the user can see what model a previous session used
+  before resuming it (mirrors Goose Desktop's persistent model indicator).
+- The picker supports an optional `--query` initial-search argument
+  (currently used internally by the Ctrl-P reopen to restore the user's
+  search query across the model-picker transition).
+
+### Changed
+- The fzf preview pane is narrower (45% instead of 55%) since the
+  metadata-only preview needs less horizontal space than a
+  conversation tail.
+- The preview header gains a `last msg:` line that surfaces
+  `last_message_at` from the session metadata (when present), so users
+  still get a quick "how recently was this session active" signal
+  without reading message bodies.
+
 ### Added
 - `-w DIR` is now documented in the `--help` output and README as the
   short form of `--working-dir`.

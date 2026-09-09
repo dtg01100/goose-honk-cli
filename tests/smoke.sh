@@ -9,7 +9,7 @@ set -euo pipefail
 # Defensively clear any HONK_* env vars leaked into this shell (e.g. from
 # running inside a resumed goose session started via honk). The tests below
 # rely on the documented defaults and on cwd/$PWD; leaked vars would silently
-# change the cwd filter, the grep filter, the picker cache, etc.
+# change the cwd filter, the picker cache, etc.
 while IFS= read -r var; do
     unset "$var"
 done < <(env | awk -F= '/^HONK_/ {print $1}')
@@ -37,9 +37,9 @@ case "${1:-} ${2:-}" in
     "session list")
         if [[ "${*:3}" == *"--format"* || "${*:3}" == *"-f json"* ]]; then
             full='[
-  {"id":"abc123","name":"demo one","working_dir":"/tmp/demo","updated_at":"2026-08-20T16:50:00Z","created_at":"2026-08-20T16:30:00Z","message_count":4,"accumulated_cost":0.01,"archived_at":null,"last_message_at":"2026-08-20T16:50:00Z"},
-  {"id":"def456","name":"demo two","working_dir":"/tmp","updated_at":"2026-08-20T15:00:00Z","created_at":"2026-08-20T10:00:00Z","message_count":12,"accumulated_cost":0.42,"archived_at":null,"last_message_at":"2026-08-20T15:00:00Z"},
-  {"id":"xyz789","name":"demo sibling","working_dir":"/tmp/demo-sibling","updated_at":"2026-08-20T14:00:00Z","created_at":"2026-08-20T09:00:00Z","message_count":2,"accumulated_cost":0.05,"archived_at":null,"last_message_at":"2026-08-20T14:00:00Z"}
+  {"id":"abc123","name":"demo one","working_dir":"/tmp/demo","updated_at":"2026-08-20T16:50:00Z","created_at":"2026-08-20T16:30:00Z","message_count":4,"accumulated_cost":0.01,"archived_at":null,"last_message_at":"2026-08-20T16:50:00Z","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"}},
+  {"id":"def456","name":"demo two","working_dir":"/tmp","updated_at":"2026-08-20T15:00:00Z","created_at":"2026-08-20T10:00:00Z","message_count":12,"accumulated_cost":0.42,"archived_at":null,"last_message_at":"2026-08-20T15:00:00Z","provider_name":"openai","model_config":{"model_name":"gpt-4o"}},
+  {"id":"xyz789","name":"demo sibling","working_dir":"/tmp/demo-sibling","updated_at":"2026-08-20T14:00:00Z","created_at":"2026-08-20T09:00:00Z","message_count":2,"accumulated_cost":0.05,"archived_at":null,"last_message_at":"2026-08-20T14:00:00Z","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"}}
 ]'
             echo "$full" | jq -r --argjson l "$LIMIT" '.[0:$l] | tostring' 2>/dev/null \
                 || jq -c --argjson l "$LIMIT" '.[]' <<<"$full" | head -"$LIMIT" | jq -s .
@@ -165,13 +165,11 @@ pass "--flag=value syntax works for --limit, -w"
 # Test: boolean flags also accept the `--flag=value` form for symmetry
 # with value-taking flags. The value is ignored (the flag is still
 # treated as boolean). This covers --archived, --all, --no-cwd,
-# --no-grep, --help, --version, --list, --json.
+# --help, --version, --list, --json.
 out=$(cd /var && "$ROOT/honk" --archived=1 --all=yes --list 2>&1)
 [[ "$out" == *"demo one"* ]] || fail "--archived=1 --all=yes should include /tmp/demo. Got: $out"
 out=$(cd /var && "$ROOT/honk" --no-cwd=1 --archived=true --list 2>&1)
 [[ "$out" == *"demo one"* ]] || fail "--no-cwd=1 --archived=true should include /tmp/demo. Got: $out"
-out=$(cd /var && "$ROOT/honk" --no-grep=anything --all --list 2>&1)
-[[ -n "$out" ]] || fail "--no-grep=anything should still list sessions. Got: $out"
 out=$("$ROOT/honk" --help=anything 2>&1)
 [[ "$out" == *"USAGE"* ]] || fail "--help=anything should still print help. Got: $out"
 out=$("$ROOT/honk" --version=anything 2>&1)
@@ -245,440 +243,269 @@ n=$(printf '%s\n' "$out" | grep -c '^abc123\|^def456' || true)
 [[ "$n" -eq 1 ]] || fail "--limit 1 --list should emit 1 session row, got $n: $out"
 pass "--limit caps the result count"
 
-# Test: preview renders every part of a multi-part message. sqlite emits the
-# body across multiple physical lines (one per embedded newline); the formatter
-# must rejoin them instead of dropping everything after the first line.
-if command -v sqlite3 >/dev/null 2>&1; then
-    dbdir="$TMP/data/goose/sessions"
-    mkdir -p "$dbdir"
-    sqlite3 "$dbdir/sessions.db" <<'SQL'
-CREATE TABLE messages (
-    session_id TEXT,
-    role TEXT,
-    content_json TEXT,
-    created_timestamp TEXT,
-    id INTEGER
-);
-INSERT INTO messages VALUES
-    ('abc123', 'assistant', '[{"type":"text","text":"hello line one"},{"type":"text","text":"hello line two"}]', '2026-08-20T16:50:00Z', 1),
-    ('abc123', 'user',     '[{"type":"text","text":"hello user"}]', '2026-08-20T16:40:00Z', 2);
-SQL
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" bash "$ROOT/lib/preview.sh" abc123 2>&1) || true
-    [[ "$out" == *"hello line one"* ]] || fail "preview missing first part. Got: $out"
-    [[ "$out" == *"hello line two"* ]] || fail "preview dropped the second part of a multi-part message. Got: $out"
-    [[ "$out" == *"hello user"* ]] || fail "preview missing user message. Got: $out"
-    [[ "$out" == *'cost:'* && "$out" != *'\$'* ]] \
-        || fail "preview header should print cost as \$ (no backslash). Got: $out"
-    pass "preview renders multi-part messages and header cost"
+# Test: honk_list_json honors HONK_LIST_CACHE. When the cache is set
+# and readable, honk_list_json reads from it instead of round-tripping
+# to goose. Stub the cache with a known session and verify it
+# round-trips through the list filter unchanged.
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-cache.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"cached1","name":"from cache","working_dir":"/tmp","updated_at":"2026-08-20T16:00:00Z","message_count":0,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T16:00:00Z"}' \
+    > "$cache_file"
+out=$(HONK_LIST_CACHE="$cache_file" HONK_PWD_ONLY=0 \
+    bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" | head -1)
+[[ "$out" == *"\"from cache\""* ]] \
+    || fail "HONK_LIST_CACHE should short-circuit goose. Got: $out"
+# The fake goose should not have been invoked at all — the cache is
+# only read from, never written to. Confirm the cache file timestamp
+# did not change.
+before=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file")
+sleep 1
+out=$(HONK_LIST_CACHE="$cache_file" HONK_PWD_ONLY=0 \
+    bash -c 'source "$1/lib/list.sh"; honk_list_json > /dev/null' _ "$ROOT")
+after=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file")
+[[ "$before" == "$after" ]] \
+    || fail "HONK_LIST_CACHE should be read-only; the file was rewritten"
+rm -f "$cache_file"
+pass "honk_list_json honors HONK_LIST_CACHE"
 
-    # Test: preview preserves literal `|` characters in message bodies. The
-    # sqlite-to-format pipeline used to use `|` as a column separator and
-    # `IFS='|' read` to split the role label from the body, so a body like
-    # `a | b | c` would be shredded into three pieces. The fake `goose`
-    # doesn't know about pipe123, so seed the metadata through the cache
-    # (which the picker uses anyway) and let sqlite provide the body.
-    sqlite3 "$dbdir/sessions.db" <<'SQL'
-INSERT INTO messages VALUES
-    ('pipe123', 'assistant', '[{"type":"text","text":"pipe payload: a | b | c"}]', '2026-08-20T16:55:00Z', 3),
-    ('pipe123', 'user',      '[{"type":"text","text":"echo a | b"}]',                '2026-08-20T16:50:00Z', 4);
-SQL
-    pipe_cache=$(mktemp "${TMPDIR:-/tmp}/honk-pipe.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"pipe123","name":"pipe test","working_dir":"/tmp","updated_at":"2026-08-20T16:55:00Z","message_count":2,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T16:55:00Z"}' \
-        > "$pipe_cache"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$pipe_cache" \
-        bash "$ROOT/lib/preview.sh" pipe123 2>&1) || true
-    rm -f "$pipe_cache"
-    [[ "$out" == *"pipe payload: a | b | c"* ]] \
-        || fail "preview mangled body containing |. Got: $out"
-    [[ "$out" == *"echo a | b"* ]] \
-        || fail "preview mangled user body containing |. Got: $out"
-    # Regression sanity: the role label must still be present and not
-    # absorbed into the body.
-    [[ "$out" == *"▸ assistant"* ]] \
-        || fail "preview missing assistant role label. Got: $out"
-    [[ "$out" == *"▸ user"* ]] \
-        || fail "preview missing user role label. Got: $out"
-    pass "preview preserves literal '|' in message bodies"
+# Test: honk_session_working_dir uses the cache too. It used to call
+# `goose session list -f json -l 500` directly with a hardcoded limit,
+# which could miss the session on a long list. After the change, it
+# reads from honk_list_json (and therefore the cache).
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-cache.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"abc123","name":"from cache","working_dir":"/tmp/demo"}' \
+    > "$cache_file"
+out=$(HONK_LIST_CACHE="$cache_file" \
+    bash -c 'source "$1/lib/actions.sh"; honk_session_working_dir abc123' _ "$ROOT")
+[[ "$out" == "/tmp/demo" ]] \
+    || fail "honk_session_working_dir should read from cache. Got: $out"
+rm -f "$cache_file"
+pass "honk_session_working_dir reads from the cache"
 
-    # Test: texts longer than HONK_PREVIEW_TEXT_CAP get a trailing `…`
-    # so the user knows the message was truncated; texts shorter than
-    # the cap render verbatim with no marker. This relies on the SQL
-    # CASE comparing `length(text) > cap` and appending the ellipsis
-    # only on truncation. The user body is long enough to trip a
-    # 30-char cap; the assistant body is short and must NOT get `…`.
-    sqlite3 "$dbdir/sessions.db" <<'SQL'
-INSERT INTO messages VALUES
-    ('trunc1', 'assistant', '[{"type":"text","text":"short assistant reply"}]', '2026-08-20T17:10:00Z', 500),
-    ('trunc1', 'user',      '[{"type":"text","text":"this is a deliberately very long user message that should be truncated by the cap"}]', '2026-08-20T17:09:00Z', 501);
-SQL
-    trunc_cache=$(mktemp "${TMPDIR:-/tmp}/honk-trunc.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"trunc1","name":"trunc test","working_dir":"/tmp","updated_at":"2026-08-20T17:10:00Z","message_count":2,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T17:10:00Z"}' \
-        > "$trunc_cache"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$trunc_cache" \
-        HONK_PREVIEW_TEXT_CAP=30 \
-        bash "$ROOT/lib/preview.sh" trunc1 2>&1) || true
-    rm -f "$trunc_cache"
-    # The assistant body (21 chars) fits within the 30-char cap, so it
-    # must appear unmodified and must NOT be followed by `…`.
-    [[ "$out" == *"short assistant reply"* ]] \
-        || fail "preview dropped a body that fits in the cap. Got: $out"
-    if [[ "$out" == *"short assistant reply…"* ]]; then
-        fail "preview should not mark bodies that fit in the cap. Got: $out"
-    fi
-    # The user body is longer than 30 chars; the first 30 chars should
-    # appear, and the rendered line should end with the truncation
-    # indicator `…` (preceded by the fold/wrap prefix `  `).
-    if [[ "$out" != *"  this is a deliberately very lo…"* ]]; then
-        fail "preview should truncate long bodies with …. Got: $out"
-    fi
-    pass "preview marks truncated text parts with …"
+# Regression: a session whose working_dir is missing or null in the
+# session list must not surface as the literal string "null" in any
+# downstream pipeline. `honk_session_working_dir` is the most
+# security-sensitive consumer (it gates a `cd`), so it must return
+# empty (not "null") so the `[[ -z "$wd" ]]` guard in the resume
+# and fork actions still triggers the documented cwd fallback.
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-nullwd.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"missing1","name":"missing working_dir"}' \
+    '{"id":"explicit1","name":"explicit null","working_dir":null}' \
+    > "$cache_file"
+out=$(HONK_LIST_CACHE="$cache_file" \
+    bash -c 'source "$1/lib/actions.sh"; honk_session_working_dir missing1' _ "$ROOT")
+[[ -z "$out" ]] \
+    || fail "honk_session_working_dir should return empty for missing working_dir (got: $out)"
+[[ "$out" != "null" ]] \
+    || fail "honk_session_working_dir must not return literal 'null' for missing working_dir"
+out=$(HONK_LIST_CACHE="$cache_file" \
+    bash -c 'source "$1/lib/actions.sh"; honk_session_working_dir explicit1' _ "$ROOT")
+[[ -z "$out" ]] \
+    || fail "honk_session_working_dir should return empty for null working_dir (got: $out)"
+[[ "$out" != "null" ]] \
+    || fail "honk_session_working_dir must not return literal 'null' for null working_dir"
+rm -f "$cache_file"
+pass "honk_session_working_dir returns empty (not 'null') for missing/null working_dir"
 
-    # Test: thinking parts also get the truncation indicator. The
-    # "(thinking) " prefix must stay on every render; only the body
-    # text is what gets the `…` marker once it overflows the cap.
-    sqlite3 "$dbdir/sessions.db" <<'SQL'
-INSERT INTO messages VALUES
-    ('think1', 'assistant', '[{"type":"thinking","thinking":"a very long internal chain of reasoning that the user probably does not want to read in full every time"}]', '2026-08-20T17:15:00Z', 600);
-SQL
-    think_cache=$(mktemp "${TMPDIR:-/tmp}/honk-think.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"think1","name":"think test","working_dir":"/tmp","updated_at":"2026-08-20T17:15:00Z","message_count":1,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T17:15:00Z"}' \
-        > "$think_cache"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$think_cache" \
-        HONK_PREVIEW_TEXT_CAP=40 \
-        bash "$ROOT/lib/preview.sh" think1 2>&1) || true
-    rm -f "$think_cache"
-    [[ "$out" == *"(thinking)"* ]] \
-        || fail "preview dropped the (thinking) prefix. Got: $out"
-    # 40-char cap on the long thinking string: substr(1, 40) grabs the
-    # first 40 bytes of the source, then we append "…" because the
-    # full text is 93 bytes long. The first 40 bytes end mid-word
-    # ("reasoning" finishes at byte 39, byte 40 is the trailing
-    # space before "that"), so the rendered body looks like
-    # "(thinking) a very long internal chain of reasoning …" — the
-    # space before "…" is the byte-40 cut.
-    if [[ "$out" != *"  (thinking) a very long internal chain of reasoning …"* ]]; then
-        fail "preview should truncate long thinking parts with …. Got: $out"
-    fi
-    # The full text is 93 bytes; if truncation were broken we'd see
-    # "every time" or "in full" later in the output.
-    if [[ "$out" == *"every time"* || "$out" == *"in full"* ]]; then
-        fail "preview should not show the untruncated tail of the thinking part. Got: $out"
-    fi
-    pass "preview marks truncated thinking parts with …"
-
-    # Test: role labels are colored by role in the preview. User
-    # turns render in bold green (\033[1;32m), assistant turns in bold
-    # cyan (\033[1;36m), and a tool/system role falls back to dim cyan
-    # (\033[2;36m). The role label must still be plain `▸ user` /
-    # `▸ assistant` text — the color is applied via ANSI escapes only.
-    sqlite3 "$dbdir/sessions.db" <<'SQL'
-INSERT INTO messages VALUES
-    ('role1', 'user',      '[{"type":"text","text":"ask something"}]', '2026-08-20T17:20:00Z', 700),
-    ('role1', 'assistant', '[{"type":"text","text":"answer something"}]', '2026-08-20T17:20:01Z', 701),
-    ('role1', 'tool',      '[{"type":"text","text":"side effect"}]', '2026-08-20T17:20:02Z', 702);
-SQL
-    role_cache=$(mktemp "${TMPDIR:-/tmp}/honk-role.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"role1","name":"role test","working_dir":"/tmp","updated_at":"2026-08-20T17:20:02Z","message_count":3,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T17:20:02Z"}' \
-        > "$role_cache"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$role_cache" \
-        bash "$ROOT/lib/preview.sh" role1 2>&1) || true
-    rm -f "$role_cache"
-    # ANSI: \033 is a literal ESC byte in double-quoted bash strings,
-    # so the patterns below match the actual escape sequences the
-    # formatter emits.
-    [[ "$out" == *$'\033[1;32m▸ user'* ]] \
-        || fail "user label should be bold green. Got: $out"
-    [[ "$out" == *$'\033[1;36m▸ assistant'* ]] \
-        || fail "assistant label should be bold cyan. Got: $out"
-    [[ "$out" == *$'\033[2;36m▸ tool'* ]] \
-        || fail "tool/system label should be dim cyan. Got: $out"
-    pass "preview colors role labels by role"
-
-    # Test: honk_list_json honors HONK_LIST_CACHE. When the cache is set
-    # and readable, honk_list_json reads from it instead of round-tripping
-    # to goose. Stub the cache with a known session and verify it
-    # round-trips through the list filter unchanged.
-    cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-cache.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"cached1","name":"from cache","working_dir":"/tmp","updated_at":"2026-08-20T16:00:00Z","message_count":0,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T16:00:00Z"}' \
-        > "$cache_file"
-    out=$(HONK_LIST_CACHE="$cache_file" HONK_PWD_ONLY=0 \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" | head -1)
-    [[ "$out" == *"\"from cache\""* ]] \
-        || fail "HONK_LIST_CACHE should short-circuit goose. Got: $out"
-    # The fake goose should not have been invoked at all — the cache is
-    # only read from, never written to. Confirm the cache file timestamp
-    # did not change.
-    before=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file")
-    sleep 1
-    out=$(HONK_LIST_CACHE="$cache_file" HONK_PWD_ONLY=0 \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json > /dev/null' _ "$ROOT")
-    after=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file")
-    [[ "$before" == "$after" ]] \
-        || fail "HONK_LIST_CACHE should be read-only; the file was rewritten"
-    rm -f "$cache_file"
-    pass "honk_list_json honors HONK_LIST_CACHE"
-
-    # Test: honk_session_working_dir uses the cache too. It used to call
-    # `goose session list -f json -l 500` directly with a hardcoded limit,
-    # which could miss the session on a long list. After the change, it
-    # reads from honk_list_json (and therefore the cache).
-    cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-cache.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"abc123","name":"from cache","working_dir":"/tmp/demo"}' \
-        > "$cache_file"
-    out=$(HONK_LIST_CACHE="$cache_file" \
-        bash -c 'source "$1/lib/actions.sh"; honk_session_working_dir abc123' _ "$ROOT")
-    [[ "$out" == "/tmp/demo" ]] \
-        || fail "honk_session_working_dir should read from cache. Got: $out"
-    rm -f "$cache_file"
-    pass "honk_session_working_dir reads from the cache"
-
-    # Regression: honk_db_path must preserve internal whitespace in the
-    # session DB path returned by `goose info`. The previous
-    # `${path//[[:space:]]/}` strip removed ALL whitespace, which would
-    # corrupt any path containing a space (e.g. under
-    # "/home/me/My Projects/..."). The fix uses awk's trailing-only
-    # strip (`gsub(/[[:space:]]+$/, "")`) so leading/trailing padding is
-    # trimmed but internal spaces survive.
-    out=$(printf 'Sessions DB:   /home/me/My Projects/sessions.db   \n' \
-        | awk -F': *' '/Sessions DB/ {gsub(/[[:space:]]+$/, ""); print $2; exit}')
-    [[ "$out" == "/home/me/My Projects/sessions.db" ]] \
-        || fail "honk_db_path parser must preserve internal whitespace. Got: [$out]"
-    pass "honk_db_path preserves internal whitespace in the session DB path"
-
-    # Regression: a session whose working_dir is missing or null in the
-    # session list must not surface as the literal string "null" in any
-    # downstream pipeline. `honk_session_working_dir` is the most
-    # security-sensitive consumer (it gates a `cd`), so it must return
-    # empty (not "null") so the `[[ -z "$wd" ]]` guard in the resume
-    # and fork actions still triggers the documented cwd fallback.
-    cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-nullwd.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"missing1","name":"missing working_dir"}' \
-        '{"id":"explicit1","name":"explicit null","working_dir":null}' \
-        > "$cache_file"
-    out=$(HONK_LIST_CACHE="$cache_file" \
-        bash -c 'source "$1/lib/actions.sh"; honk_session_working_dir missing1' _ "$ROOT")
-    [[ -z "$out" ]] \
-        || fail "honk_session_working_dir should return empty for missing working_dir (got: $out)"
-    [[ "$out" != "null" ]] \
-        || fail "honk_session_working_dir must not return literal 'null' for missing working_dir"
-    out=$(HONK_LIST_CACHE="$cache_file" \
-        bash -c 'source "$1/lib/actions.sh"; honk_session_working_dir explicit1' _ "$ROOT")
-    [[ -z "$out" ]] \
-        || fail "honk_session_working_dir should return empty for null working_dir (got: $out)"
-    [[ "$out" != "null" ]] \
-        || fail "honk_session_working_dir must not return literal 'null' for null working_dir"
-    rm -f "$cache_file"
-    pass "honk_session_working_dir returns empty (not 'null') for missing/null working_dir"
-
-    # Regression: the preview pane's header must not print the literal
-    # string "null" for sessions whose working_dir, created_at, or
-    # updated_at are missing or null. The fake goose emits working_dir
-    # for every session so we exercise this through a hand-crafted
-    # cache that omits those fields entirely.
-    cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-preview-null.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"nullmeta","name":"null meta"}' \
-        > "$cache_file"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$cache_file" \
-        bash "$ROOT/lib/preview.sh" nullmeta 2>&1) || true
-    rm -f "$cache_file"
-    if [[ "$out" == *"working_dir: null"* || "$out" == *"created:    null"* \
-       || "$out" == *"updated:    null"* ]]; then
-        fail "preview header must not render literal 'null' for missing fields. Got: $out"
-    fi
-    [[ "$out" == *"nullmeta"* ]] \
-        || fail "preview header should still render the session name. Got: $out"
-    pass "preview header renders empty (not 'null') for missing metadata fields"
-
-    # Regression: a message with a non-JSON content_json (a real-data
-    # possibility if a partial row lands in the DB) used to leak sqlite's
-    # "malformed JSON" stderr warning into the preview pane, because
-    # fzf captures both stdout and stderr for the preview and we did
-    # not redirect sqlite's stderr. The fix pins `2>/dev/null` on the
-    # sqlite invocation so the row is silently dropped (the surrounding
-    # coalesce keeps the query valid) and the warning never reaches the
-    # preview.
-    sqlite3 "$dbdir/sessions.db" <<'SQL'
-INSERT INTO messages VALUES
-    ('bad1', 'user', 'not valid json', '2026-08-20T18:00:00Z', 900);
-SQL
-    bad_cache=$(mktemp "${TMPDIR:-/tmp}/honk-bad.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"bad1","name":"bad json","working_dir":"/tmp","updated_at":"2026-08-20T18:00:00Z","message_count":1,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T18:00:00Z"}' \
-        > "$bad_cache"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_LIST_CACHE="$bad_cache" \
-        bash "$ROOT/lib/preview.sh" bad1 2>&1) || true
-    rm -f "$bad_cache"
-    if [[ "$out" == *"malformed JSON"* || "$out" == *"Error near"* ]]; then
-        fail "preview must not leak sqlite stderr on malformed JSON. Got: $out"
-    fi
-    [[ "$out" == *"bad1"* ]] \
-        || fail "preview should still render the session header. Got: $out"
-    pass "preview silently drops rows with malformed content_json"
-
-    # Test: resume echoes the conversation tail before handing off to goose.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_TAIL=4 bash -c '
-        source "$1/lib/actions.sh"
-        honk_show_session_tail abc123
-    ' _ "$ROOT" 2>&1) || true
-    [[ "$out" == *"last 4 messages"* ]] || fail "resume tail header missing. Got: $out"
-    [[ "$out" == *"hello line two"* ]] || fail "resume tail missing the last message. Got: $out"
-    [[ "$out" == *"hello user"* ]] || fail "resume tail missing earlier message. Got: $out"
-
-    # Invalid tail values fall back to the documented default.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_TAIL=bad bash -c '
-        source "$1/lib/actions.sh"
-        honk_show_session_tail abc123
-    ' _ "$ROOT" 2>&1) || true
-    [[ "$out" == *"using 4"* ]] || fail "invalid HONK_RESUME_TAIL should fall back to 4. Got: $out"
-    pass "invalid resume tail falls back to the default"
-
-    # HONK_RESUME_PREVIEW=0 must suppress the tail entirely.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" HONK_RESUME_PREVIEW=0 bash -c '
-        source "$1/lib/actions.sh"
-        honk_show_session_tail abc123
-    ' _ "$ROOT" 2>&1) || true
-    [[ -z "$out" ]] || fail "HONK_RESUME_PREVIEW=0 should suppress the tail. Got: $out"
-    pass "resume echoes the conversation tail (and can be disabled)"
-
-    # Seed an extra session whose messages contain a unique token so we
-    # can verify grep filtering end-to-end. The fake goose doesn't know
-    # about it, so we go through the HONK_LIST_CACHE path that the
-    # picker uses in practice.
-    sqlite3 "$dbdir/sessions.db" <<'SQL'
-INSERT INTO messages VALUES
-    ('grep1', 'user', '[{"type":"text","text":"this is a uniquetoken message"}]', '2026-08-20T17:00:00Z', 100),
-    ('grep1', 'assistant', '[{"type":"text","text":"reply with uniquetoken"}]', '2026-08-20T17:00:01Z', 101);
-SQL
-    grep_cache=$(mktemp "${TMPDIR:-/tmp}/honk-grep.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"abc123","name":"demo one","working_dir":"/tmp/demo"}' \
-        '{"id":"grep1","name":"grep target","working_dir":"/tmp/grep"}' \
-        > "$grep_cache"
-
-    # Test: HONK_GREP filters session list to IDs whose messages match.
-    # When the cache is set, honk_list_json reads from it instead of
-    # goose, so we just need the IDs in the cache and the messages in
-    # sqlite. Only "grep1" has messages containing "uniquetoken".
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$grep_cache" HONK_GREP="uniquetoken" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1)
-    n=$(printf '%s\n' "$out" | grep -c '^{' || true)
-    [[ "$n" -eq 1 ]] || fail "HONK_GREP=uniquetoken should match 1 session, got $n: $out"
-    [[ "$out" == *"grep1"* ]] || fail "HONK_GREP=uniquetoken should match grep1. Got: $out"
-    [[ "$out" != *"abc123"* ]] || fail "HONK_GREP=uniquetoken should NOT match abc123. Got: $out"
-    pass "HONK_GREP filters by message content"
-
-    # Test: case-insensitive match. The default is COLLATE NOCASE so
-    # "UNIQUETOKEN" should match the same sessions as "uniquetoken".
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$grep_cache" HONK_GREP="UNIQUETOKEN" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1)
-    [[ "$out" == *"grep1"* ]] || fail "HONK_GREP=UNIQUETOKEN should case-insensitively match grep1. Got: $out"
-    pass "HONK_GREP is case-insensitive"
-
-    # Test: no matches → empty output (and the picker would just show
-    # nothing rather than crashing).
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$grep_cache" HONK_GREP="definitely_not_in_any_message" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1)
-    n=$(printf '%s\n' "$out" | grep -c '^{' || true)
-    [[ "$n" -eq 0 ]] || fail "HONK_GREP=missing should match nothing, got $n: $out"
-    pass "HONK_GREP returns empty when no matches"
-
-    # Test: empty HONK_GREP disables the filter (same semantics as
-    # unset). All sessions in the cache should pass through.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$grep_cache" HONK_GREP="" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1)
-    n=$(printf '%s\n' "$out" | grep -c '^{' || true)
-    [[ "$n" -eq 2 ]] || fail "HONK_GREP='' should match all 2 sessions, got $n: $out"
-    pass "empty HONK_GREP disables the filter"
-
-    # Test: query with LIKE wildcards is escaped so '%' or '_' do not
-    # silently match every session. The SQL `LIKE` pattern treats them
-    # as the literal characters typed by the user.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$grep_cache" HONK_GREP="%" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1)
-    n=$(printf '%s\n' "$out" | grep -c '^{' || true)
-    [[ "$n" -eq 0 ]] || fail "HONK_GREP=% should NOT match (wildcard escaped), got $n: $out"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$grep_cache" HONK_GREP="_" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1)
-    n=$(printf '%s\n' "$out" | grep -c '^{' || true)
-    [[ "$n" -eq 0 ]] || fail "HONK_GREP=_ should NOT match (wildcard escaped), got $n: $out"
-    pass "HONK_GREP escapes LIKE wildcards in the query"
-
-    # Test: queries containing SQL single quotes are escaped. The
-    # escape uses sqlite's standard '' doubling, so the query still
-    # matches any string containing the literal apostrophe.
-    sqlite3 "$dbdir/sessions.db" <<'SQL'
-INSERT INTO messages VALUES
-    ('quote1', 'user', '[{"type":"text","text":"it''s a test"}]', '2026-08-20T17:05:00Z', 200);
-SQL
-    quote_cache=$(mktemp "${TMPDIR:-/tmp}/honk-quote.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"quote1","name":"quote target","working_dir":"/tmp/quote"}' \
-        > "$quote_cache"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$quote_cache" HONK_GREP="it's" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1)
-    [[ "$out" != *"syntax error"* ]] || fail "HONK_GREP with quote should not crash. Got: $out"
-    [[ "$out" == *"quote1"* ]] || fail "HONK_GREP=\"it's\" should match quote1. Got: $out"
-    rm -f "$quote_cache"
-
-    # Test: grep failures (no sqlite3) surface as a clear error, not a
-    # silent empty list. Skip when sqlite3 is here but pretend it isn't
-    # by pointing at a non-existent DB.
-    mkdir -p "$TMP/no-sqlite"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/no-sqlite" \
-        HONK_GREP="anything" \
-        bash -c 'source "$1/lib/list.sh"; honk_list_json' _ "$ROOT" 2>&1) || true
-    [[ "$out" == *"goose DB"* || "$out" == *"sqlite3"* ]] \
-        || fail "HONK_GREP with missing DB should error clearly. Got: $out"
-    pass "HONK_GREP surfaces a clear error when the DB is unreadable"
-
-    rm -f "$grep_cache"
-
-    # Test: --grep CLI flag is parsed and honored end-to-end through
-    # the main honk entrypoint. The fake goose doesn't know about
-    # grep1, so we pre-populate the cache (the same path the picker
-    # uses) and let sqlite provide the message bodies. The grep
-    # filter is applied on top of the cache regardless of where the
-    # list came from.
-    grep_cli_cache=$(mktemp "${TMPDIR:-/tmp}/honk-grep-cli.XXXXXX.json")
-    printf '%s\n' \
-        '{"id":"abc123","name":"demo one","working_dir":"/tmp/demo"}' \
-        '{"id":"grep1","name":"grep target","working_dir":"/tmp/grep"}' \
-        > "$grep_cli_cache"
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$grep_cli_cache" \
-        "$ROOT/honk" --grep uniquetoken --all --json 2>&1)
-    n=$(printf '%s\n' "$out" | grep -c '^{' || true)
-    [[ "$n" -eq 1 ]] || fail "--grep uniquetoken should match 1 session. Got: $n: $out"
-    [[ "$out" == *"grep1"* ]] || fail "--grep uniquetoken should match grep1. Got: $out"
-    pass "--grep CLI flag filters by message content"
-
-    # Test: --no-grep CLI flag clears the filter so the full list
-    # (modulo other filters) passes through.
-    out=$(cd /tmp && XDG_DATA_HOME="$TMP/data" \
-        HONK_LIST_CACHE="$grep_cli_cache" \
-        "$ROOT/honk" --grep uniquetoken --no-grep --all --json 2>&1)
-    n=$(printf '%s\n' "$out" | grep -c '^{' || true)
-    [[ "$n" -eq 2 ]] || fail "--no-grep should restore the full list (2 sessions). Got: $n: $out"
-    rm -f "$grep_cli_cache"
-    pass "--no-grep clears the grep filter"
-else
-    echo "skipping preview/tail tests (sqlite3 not installed)"
+# Regression: the preview pane's header must not print the literal
+# string "null" for sessions whose working_dir, created_at, or
+# updated_at are missing or null. The fake goose emits working_dir
+# for every session so we exercise this through a hand-crafted
+# cache that omits those fields entirely.
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-preview-null.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"nullmeta","name":"null meta"}' \
+    > "$cache_file"
+out=$(cd /tmp && HONK_LIST_CACHE="$cache_file" \
+    bash "$ROOT/lib/preview.sh" nullmeta 2>&1) || true
+rm -f "$cache_file"
+if [[ "$out" == *"working_dir: null"* || "$out" == *"created:    null"* \
+   || "$out" == *"updated:    null"* ]]; then
+    fail "preview header must not render literal 'null' for missing fields. Got: $out"
 fi
+[[ "$out" == *"nullmeta"* ]] \
+    || fail "preview header should still render the session name. Got: $out"
+pass "preview header renders empty (not 'null') for missing metadata fields"
+
+# Regression: invalid HONK_GREP / --grep arguments are rejected with a
+# clear error so a user who fat-fingers the flag name catches the typo.
+# The flag itself was removed in the same change, so we expect the parser
+# to reject it as an unknown flag rather than silently swallow it.
+out=$("$ROOT/honk" --grep foo --list 2>&1) || true
+[[ "$out" == *"unknown flag"* ]] \
+    || fail "removed --grep flag should be rejected as unknown. Got: $out"
+out=$(cd /tmp && HONK_GREP=foo \
+    "$ROOT/honk" --list 2>&1) || true
+# HONK_GREP is a no-op now; --list should still produce output rather
+# than a filter-related error.
+[[ "$out" == *"demo one"* ]] \
+    || fail "honk --list should ignore inherited HONK_GREP. Got: $out"
+pass "removed --grep flag and HONK_GREP env var are rejected / ignored"
+
+# Test: the metadata preview shows provider_name and the model from
+# model_config.model_name, both of which are part of the public
+# `goose session list --format json` shape. Empty values render as
+# empty (not the literal "null" string from missing fields).
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-pm-meta.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"pm1","name":"provider/model session","working_dir":"/tmp","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"},"accumulated_cost":0,"message_count":0,"created_at":"","updated_at":"","last_message_at":null}' \
+    > "$cache_file"
+out=$(cd /tmp && HONK_LIST_CACHE="$cache_file" \
+    bash "$ROOT/lib/preview.sh" pm1 2>&1) || true
+rm -f "$cache_file"
+[[ "$out" == *"provider:"*"anthropic"* ]] \
+    || fail "preview header should show provider. Got: $out"
+[[ "$out" == *"model:"*"claude-3-5-sonnet-latest"* ]] \
+    || fail "preview header should show model. Got: $out"
+pass "preview header shows provider and model"
+
+# Test: honk_provider_candidates emits providers sorted by frequency,
+# with cache-derived entries first and a static fallback list (per
+# goose's --help) appended. Duplicates are removed (cache wins).
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-pm-prov.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"p1","name":"a","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"}}' \
+    '{"id":"p2","name":"b","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"}}' \
+    '{"id":"p3","name":"c","provider_name":"anthropic","model_config":{"model_name":"claude-3-opus-latest"}}' \
+    '{"id":"p4","name":"d","provider_name":"openai","model_config":{"model_name":"gpt-4o"}}' \
+    '{"id":"p5","name":"e","provider_name":"openai","model_config":{"model_name":"gpt-4o"}}' \
+    > "$cache_file"
+out=$(HONK_LIST_CACHE="$cache_file" \
+    bash -c 'source "$1/lib/list.sh"; honk_provider_candidates' _ "$ROOT")
+rm -f "$cache_file"
+expected=$'anthropic\nopenai\nclaude-code\ndatabricks\ngemini-cli\nollama'
+[[ "$out" == "$expected" ]] \
+    || fail "provider candidates mismatch. Got: [$out] Expected: [$expected]"
+pass "honk_provider_candidates lists providers by frequency with fallback"
+
+# Test: honk_provider_candidates marks the current override with
+# " (current)" so the picker can highlight what's already in effect.
+# We deliberately do NOT pipe through `head -1` inside the command
+# substitution: the bash subshell produces multiple lines, so `head -1`
+# causes a SIGPIPE that escapes via `set -o pipefail` and kills the
+# test script. We capture the full output and slice the first line
+# with parameter expansion instead.
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-pm-curprov.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"p1","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"}}' \
+    > "$cache_file"
+out=$(HONK_LIST_CACHE="$cache_file" HONK_PROVIDER=anthropic \
+    bash -c 'source "$1/lib/list.sh"; honk_provider_candidates' _ "$ROOT")
+first_line="${out%%$'\n'*}"
+rm -f "$cache_file"
+[[ "$first_line" == "anthropic (current)" ]] \
+    || fail "current override should be marked. Got: [$out]"
+pass "honk_provider_candidates marks the current override"
+
+# Test: honk_model_candidates emits models for a given provider,
+# sorted by descending frequency, with the current override marked.
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-pm-models.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"m1","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"}}' \
+    '{"id":"m2","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"}}' \
+    '{"id":"m3","provider_name":"anthropic","model_config":{"model_name":"claude-3-opus-latest"}}' \
+    '{"id":"m4","provider_name":"openai","model_config":{"model_name":"gpt-4o"}}' \
+    > "$cache_file"
+out=$(HONK_LIST_CACHE="$cache_file" \
+    bash -c 'source "$1/lib/list.sh"; honk_model_candidates anthropic' _ "$ROOT")
+rm -f "$cache_file"
+expected=$'claude-3-5-sonnet-latest\nclaude-3-opus-latest'
+[[ "$out" == "$expected" ]] \
+    || fail "model candidates mismatch. Got: [$out] Expected: [$expected]"
+pass "honk_model_candidates filters models by provider and sorts by frequency"
+
+# Test: honk_model_candidates emits nothing for a provider with no
+# recorded models in the cache; the caller is expected to fall back
+# to goose's default model rather than blocking on an empty list.
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-pm-empty.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"m1","provider_name":"anthropic","model_config":{"model_name":"claude-3-5-sonnet-latest"}}' \
+    > "$cache_file"
+out=$(HONK_LIST_CACHE="$cache_file" \
+    bash -c 'source "$1/lib/list.sh"; honk_model_candidates databricks' _ "$ROOT")
+rm -f "$cache_file"
+[[ -z "$out" ]] \
+    || fail "model candidates should be empty for unrecorded provider. Got: [$out]"
+pass "honk_model_candidates returns empty for unrecorded provider"
+
+# Test: --provider / --model CLI flags parse and are accepted on --list.
+# We `cd /tmp` first so the cwd-only filter (HONK_PWD_ONLY=1, the default)
+# admits the fake goose's /tmp/demo and /tmp working_dirs.
+out=$(cd /tmp && "$ROOT/honk" --provider anthropic --model claude-3-5-sonnet-latest --list 2>&1)
+[[ "$out" == *"demo one"* ]] \
+    || fail "--provider/--model should not break --list. Got: $out"
+# The =value form should also be accepted.
+out=$(cd /tmp && "$ROOT/honk" --provider=anthropic --model=claude --list 2>&1)
+[[ "$out" == *"demo one"* ]] \
+    || fail "--provider= / --model= should not break --list. Got: $out"
+pass "--provider and --model CLI flags are accepted"
+
+# Test: HONK_PROVIDER and HONK_MODEL are appended to the goose exec
+# when honk_action_resume runs. We use bash -x to capture the would-be
+# exec line (the exec replaces the bash process before any real goose
+# invocation, but the trace survives up to that point). We redirect
+# stdout to /dev/null so the fake goose's "unhandled" noise doesn't
+# pollute the trace.
+trace=$(cd /tmp && HONK_PROVIDER=anthropic HONK_MODEL=claude-3-5-sonnet-latest \
+    bash -x -c 'source "$1/lib/actions.sh"; honk_action_resume abc123' _ "$ROOT" 2>&1 1>/dev/null) || true
+if ! grep -qF 'exec goose session --resume --session-id abc123 --provider anthropic --model claude-3-5-sonnet-latest' <<<"$trace"; then
+    fail "HONK_PROVIDER/HONK_MODEL should append --provider/--model to resume. Trace: $trace"
+fi
+pass "HONK_PROVIDER and HONK_MODEL flow into honk_action_resume"
+
+# Test: HONK_PROVIDER alone appends only --provider (no --model flag).
+trace=$(cd /tmp && HONK_PROVIDER=anthropic \
+    bash -x -c 'source "$1/lib/actions.sh"; honk_action_resume abc123' _ "$ROOT" 2>&1 1>/dev/null) || true
+if ! grep -qF 'exec goose session --resume --session-id abc123 --provider anthropic' <<<"$trace"; then
+    fail "HONK_PROVIDER alone should append --provider. Trace: $trace"
+fi
+if grep -qE -- '--model[[:space:]]' <<<"$trace"; then
+    fail "HONK_PROVIDER alone should NOT append --model. Trace: $trace"
+fi
+pass "HONK_PROVIDER alone appends only --provider"
+
+# Test: neither env var set means no --provider/--model flags added.
+trace=$(cd /tmp && unset HONK_PROVIDER HONK_MODEL \
+    bash -x -c 'source "$1/lib/actions.sh"; honk_action_resume abc123' _ "$ROOT" 2>&1 1>/dev/null) || true
+if grep -qE -- '--provider[[:space:]]|--model[[:space:]]' <<<"$trace"; then
+    fail "unset HONK_PROVIDER/HONK_MODEL should NOT append --provider/--model. Trace: $trace"
+fi
+pass "unset HONK_PROVIDER/HONK_MODEL add no override flags"
+
+# Test: honk_action_fork picks up the same overrides as honk_action_resume.
+trace=$(cd /tmp && HONK_PROVIDER=openai HONK_MODEL=gpt-4o \
+    bash -x -c 'source "$1/lib/actions.sh"; honk_action_fork abc123' _ "$ROOT" 2>&1 1>/dev/null) || true
+if ! grep -qF 'exec goose session --resume --fork --session-id abc123 --provider openai --model gpt-4o' <<<"$trace"; then
+    fail "fork should forward --provider/--model. Trace: $trace"
+fi
+pass "honk_action_fork forwards provider/model overrides"
+
+# Test: honk_action_new appends --provider/--model to `goose session --name`.
+# We skip the interactive name prompt by passing the name as the second arg.
+trace=$(cd /tmp && HONK_PROVIDER=anthropic HONK_MODEL=claude-3-5-sonnet-latest \
+    bash -x -c 'source "$1/lib/actions.sh"; honk_action_new /tmp demo-name' _ "$ROOT" 2>&1 1>/dev/null) || true
+if ! grep -qF 'exec goose session --name demo-name --provider anthropic --model claude-3-5-sonnet-latest' <<<"$trace"; then
+    fail "new should forward --provider/--model. Trace: $trace"
+fi
+pass "honk_action_new forwards provider/model overrides"
+
+# Test: --provider and --model on the honk CLI are passed through to
+# the resolved resume (`honk -r`). bash -x traces the resume path,
+# which exec's the goose session subcommand. The captured trace
+# contains both the bash internals (where set -e is set, etc.) and
+# the final `+ exec goose session --resume --session-id abc123
+# --provider claude-cli --model haiku` line. We cd to /tmp so the
+# cwd-only filter admits /tmp/demo, and quote the resume fragment
+# so honk's positional parser sees exactly one argument.
+trace=$(cd /tmp && PATH="$TMP/bin:$PATH" \
+    HONK_PROVIDER=claude-cli HONK_MODEL=haiku \
+    bash -x "$ROOT/honk" -r "demo one" </dev/null 2>&1) || true
+if ! grep -qF -- '--provider claude-cli --model haiku' <<<"$trace"; then
+    fail "-r should honor HONK_PROVIDER/HONK_MODEL end-to-end. Trace: $trace"
+fi
+pass "honk -r honors HONK_PROVIDER / HONK_MODEL end-to-end"
 
 # Regression: invoking the interactive picker without a tty must not crash
 # with "cache: unbound variable" from the EXIT trap. The picker sets up a

@@ -12,8 +12,8 @@
 #   honk --no-cwd            don't filter by cwd (alias for --all)
 #   honk --archived          include archived sessions
 #   honk --limit N           (default: 50)
-#   honk --grep <query>      filter picker to sessions whose messages contain query
-#   honk --no-grep           clear an inherited grep filter
+#   honk --provider NAME     override provider for this run
+#   honk --model NAME        override model for this run
 #   honk --version           print honk version and exit
 #   honk --help
 #
@@ -61,8 +61,8 @@ USAGE
   honk --no-cwd             Don't filter by cwd (alias for --all)
   honk --archived           Include archived sessions
   honk --limit N            Limit results (default: 50)
-  honk --grep QUERY         Restrict picker to sessions whose messages contain QUERY
-  honk --no-grep            Clear an inherited grep filter
+  honk --provider NAME      Override provider for the next launch
+  honk --model NAME         Override model for the next launch
   honk --version            Print honk version and exit
   honk -V                   Short form of --version
   honk --help               Show this help
@@ -75,16 +75,15 @@ PICKER KEY BINDINGS
   Ctrl-E        Export session JSON to ./
   Ctrl-D        Delete (asks for y/N confirmation)
   Ctrl-A        Show all sessions; press again to return to cwd-only
-  Ctrl-G        Grep messages: prompt for a query, then reopen the picker
-                filtered to sessions whose messages contain it (empty
-                input clears the filter; cwd-only mode is preserved)
+  Ctrl-P        Pick provider/model for the next launch (mirrors the
+                desktop app's per-session model selector)
   Esc / Ctrl-C  Cancel
 
 EXAMPLES
   honk
   honk --working-dir ~/projects/foo
   HONK_LIMIT=200 honk --all
-  honk --grep TODO         # only sessions whose messages contain "TODO"
+  honk --provider anthropic --model claude-3-5-sonnet-latest    # next launch uses this provider/model
   honk -r CI    # fuzzy-resolve and resume a session matching 'CI'
 
 ENVIRONMENT
@@ -92,9 +91,8 @@ ENVIRONMENT
   HONK_ARCHIVED=1       Include archived sessions
   HONK_PWD_ONLY=0       Don't filter by cwd
   HONK_WORKDIR=DIR      Override cwd filter base
-  HONK_GREP=QUERY       Filter to sessions whose messages contain QUERY
-  HONK_RESUME_PREVIEW=0 Skip echoing the conversation tail before resume/fork
-  HONK_RESUME_TAIL=N    Messages to echo before resume/fork (default: 4)
+  HONK_PROVIDER=NAME    Override provider for the next launch
+  HONK_MODEL=NAME       Override model for the next launch
 EOF
 }
 
@@ -272,29 +270,45 @@ honk_pick() {
     # kernel stops it with SIGTTIN the instant it reads /dev/tty (a frozen
     # picker). GNU timeout(1) runs commands in their own background group by
     # default, so pass --foreground; if the installed timeout lacks it, run
-    # fzf without a wrapper (Esc / Ctrl-C still cancel cleanly).
-    local tmo=()
-    if command -v timeout >/dev/null 2>&1 \
-        && timeout --help 2>&1 | grep -q -- '--foreground'; then
-        tmo=(timeout --foreground "${HONK_FZF_TIMEOUT:-600}")
+    # fzf without a wrapper (Esc / Ctrl-C still cancel cleanly). Used for
+    # both the main picker and the Ctrl-P sub-pickers, so the timeout is
+    # factored into honk_fzf below.
+    honk_fzf() {
+        local -a tmo=()
+        if command -v timeout >/dev/null 2>&1 \
+            && timeout --help 2>&1 | grep -q -- '--foreground'; then
+            tmo=(timeout --foreground "${HONK_FZF_TIMEOUT:-600}")
+        fi
+        "${tmo[@]}" fzf "$@"
+    }
+
+    # Dynamic prompt: when the user has set a provider/model override
+    # (via Ctrl-P, --provider/--model CLI, or HONK_PROVIDER/HONK_MODEL
+    # env), reflect it in the prompt so it's visible before pressing
+    # Enter. Mirrors the desktop app's persistent model indicator.
+    local prompt="goose"
+    if [[ -n "${HONK_PROVIDER:-}" && -n "${HONK_MODEL:-}" ]]; then
+        prompt="goose [$HONK_PROVIDER/$HONK_MODEL]"
+    elif [[ -n "${HONK_PROVIDER:-}" ]]; then
+        prompt="goose [$HONK_PROVIDER]"
     fi
 
     local selection
     selection=$(
-        "${tmo[@]}" \
-        fzf --ansi \
+        honk_fzf --ansi \
             --delimiter=$'\t' \
             --with-nth=1 \
-            --prompt='goose › ' \
+            --prompt="${prompt} › " \
             --no-sort \
             --no-multi \
             --height=85% \
             --layout=reverse \
             --border \
             --preview="$preview_cmd" \
-            --preview-window='right:55%:wrap:border-sharp' \
-            --header='enter resume · ^F fork · ^N new · ^E export · ^D delete · ^A all sessions · ^G grep' \
-            --expect='enter,ctrl-a,ctrl-f,ctrl-n,ctrl-e,ctrl-d,ctrl-g' \
+            --preview-window='right:45%:wrap:border-sharp' \
+            --header='enter resume · ^F fork · ^N new · ^E export · ^D delete · ^A all · ^P provider/model' \
+            --expect='enter,ctrl-a,ctrl-f,ctrl-n,ctrl-e,ctrl-d,ctrl-p' \
+            ${query_arg:+--query "$query_arg"} \
         <<<"$fmt_rows"
     ) || {
         local rc=$?
@@ -342,7 +356,8 @@ honk_pick() {
         ctrl-a)
             # Reopen the picker in the opposite filter mode. exec so honk
             # is replaced; carry over the result cap, working directory,
-            # and any active grep query.
+            # and any provider/model override (which is otherwise lost
+            # when we exec a fresh honk process).
             local reopen=( --limit "$limit" )
             if [[ -n "${HONK_WORKDIR:-}" ]]; then
                 reopen+=( --working-dir "$HONK_WORKDIR" )
@@ -350,28 +365,62 @@ honk_pick() {
             if (( pwd_only == 1 )); then
                 reopen+=( --all )
             fi
-            if [[ -n "${HONK_GREP:-}" ]]; then
-                reopen+=( --grep "${HONK_GREP}" )
+            if [[ -n "${HONK_PROVIDER:-}" ]]; then
+                reopen+=( --provider "$HONK_PROVIDER" )
+            fi
+            if [[ -n "${HONK_MODEL:-}" ]]; then
+                reopen+=( --model "$HONK_MODEL" )
             fi
             exec "$(readlink -f "$0")" "${reopen[@]}"
             ;;
-        ctrl-g)
-            # Prompt for a grep query and reopen the picker with it.
-            # Empty input clears the filter. The cwd-only mode is
-            # preserved across the reopen (we add --all iff currently
-            # showing all sessions). exec so the new picker comes up
-            # under the same terminal fds and reads stdin from /dev/tty.
-            local new_query
-            read -r -p "grep (empty to clear): " new_query </dev/tty || return 0
+        ctrl-p)
+            # Per-session provider/model selector. Mirrors the Goose
+            # Desktop app's model dropdown: pick a provider from the
+            # candidates derived from the cached session list (plus a
+            # small fallback for discoverability), then a model from
+            # the cached models for that provider. If the chosen
+            # provider has no recorded models in this session history
+            # we skip the model sub-picker and let goose use its
+            # default model for that provider — goose handles that
+            # lookup natively, so honk doesn't need to enumerate it.
+            #
+            # The override is applied via exec-reopen so the prompt
+            # visibly reflects it. Cursor position is lost across the
+            # reopen, but the user's search query is preserved.
+            local new_provider new_model last_query
+            last_query=$(printf '%s\n' "$selection" | head -1)
+            if ! new_provider=$(honk_provider_candidates \
+                | honk_fzf --prompt='provider › ' \
+                           --no-sort --height=60% --layout=reverse --border \
+                           --header="current: ${HONK_PROVIDER:-(default)} | Esc to keep") ; then
+                return 0   # Esc on the sub-picker: keep the current override
+            fi
+            new_provider="${new_provider% (current)}"
+
+            local model_candidates
+            model_candidates=$(honk_model_candidates "$new_provider")
+            if [[ -z "$model_candidates" ]]; then
+                printf 'honk: no recorded models for provider %q in session history; goose will use its default model\n' \
+                    "$new_provider" >&2
+                new_model=""
+            elif ! new_model=$(printf '%s\n' "$model_candidates" \
+                | honk_fzf --prompt="model for $new_provider › " \
+                           --no-sort --height=60% --layout=reverse --border \
+                           --header="provider: $new_provider | current: ${HONK_MODEL:-(default)} | Esc to use default") ; then
+                # Esc on the model sub-picker: keep the provider override
+                # but fall back to goose's default model for it.
+                new_model=""
+            else
+                new_model="${new_model% (current)}"
+            fi
+
             local reopen=( --limit "$limit" )
-            if [[ -n "${HONK_WORKDIR:-}" ]]; then
-                reopen+=( --working-dir "$HONK_WORKDIR" )
-            fi
-            if (( pwd_only == 0 )); then
-                reopen+=( --all )
-            fi
-            if [[ -n "$new_query" ]]; then
-                reopen+=( --grep "$new_query" )
+            [[ -n "${HONK_WORKDIR:-}" ]] && reopen+=( --working-dir "$HONK_WORKDIR" )
+            (( pwd_only == 0 )) && reopen+=( --all )
+            reopen+=( --provider "$new_provider" )
+            [[ -n "$new_model" ]] && reopen+=( --model "$new_model" )
+            if [[ -n "$last_query" && "$last_query" != "$(printf '\n')" ]]; then
+                reopen+=( --query "$last_query" )
             fi
             exec "$(readlink -f "$0")" "${reopen[@]}"
             ;;
@@ -424,7 +473,9 @@ limit="${HONK_LIMIT:-$HONK_LIMIT_DEFAULT}"
 workdir="${HONK_WORKDIR:-}"
 cwd_only="${HONK_PWD_ONLY:-1}"
 archived="${HONK_ARCHIVED:-0}"
-grep_query="${HONK_GREP:-}"
+provider="${HONK_PROVIDER:-}"
+model="${HONK_MODEL:-}"
+query_arg=""
 
 while (($#)); do
     case "$1" in
@@ -448,10 +499,12 @@ while (($#)); do
         --archived=*)     archived=1 ;;   # ignore =value; flag is boolean
         --limit)          shift; limit="${1:-}"; [[ -z "$limit" ]] && { echo "honk: --limit needs an argument" >&2; exit 2; } ;;
         --limit=*)        limit="${1#*=}"; [[ -z "$limit" ]] && { echo "honk: --limit needs an argument" >&2; exit 2; } ;;
-        --grep)           shift; grep_query="${1:-}"; [[ -z "$grep_query" ]] && { echo "honk: --grep needs a non-empty argument (use --no-grep to clear)" >&2; exit 2; } ;;
-        --grep=*)         grep_query="${1#*=}"; [[ -z "$grep_query" ]] && { echo "honk: --grep needs a non-empty argument (use --no-grep to clear)" >&2; exit 2; } ;;
-        --no-grep)        grep_query="" ;;
-        --no-grep=*)      grep_query="" ;;   # ignore =value; flag is boolean
+        --provider)       shift; provider="${1:-}"; [[ -z "$provider" ]] && { echo "honk: --provider needs an argument" >&2; exit 2; } ;;
+        --provider=*)     provider="${1#*=}"; [[ -z "$provider" ]] && { echo "honk: --provider needs an argument" >&2; exit 2; } ;;
+        --model)          shift; model="${1:-}"; [[ -z "$model" ]] && { echo "honk: --model needs an argument" >&2; exit 2; } ;;
+        --model=*)        model="${1#*=}"; [[ -z "$model" ]] && { echo "honk: --model needs an argument" >&2; exit 2; } ;;
+        --query)          shift; query_arg="${1:-}"; ;;   # initial fzf query (used to restore on reopen)
+        --query=*)        query_arg="${1#*=}"; ;;
         --no-cwd)         cwd_only=0 ;;
         --no-cwd=*)       cwd_only=0 ;;   # ignore =value; flag is boolean
         --)               shift; break ;;
@@ -482,7 +535,8 @@ export HONK_LIMIT="$limit"
 export HONK_PWD_ONLY="$cwd_only"
 export HONK_ARCHIVED="$archived"
 export HONK_WORKDIR="$workdir"
-export HONK_GREP="$grep_query"
+export HONK_PROVIDER="$provider"
+export HONK_MODEL="$model"
 
 if (( help )); then
     usage

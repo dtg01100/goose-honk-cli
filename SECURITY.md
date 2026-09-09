@@ -31,7 +31,6 @@ still:
 - install it from a trusted checkout and review changes before upgrading;
 - keep the goose database and exported session files private;
 - review paths and session IDs before using export, resume, or delete actions;
-- remember that the interactive preview displays local conversation content;
 - protect the same accounts and host access used by goose itself.
 
 Resume, fork, and new-session operations hand control to goose. Deletion is

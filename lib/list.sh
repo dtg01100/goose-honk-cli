@@ -12,6 +12,11 @@
 #   HONK_ARCHIVED  (default 0; set to 1 to include archived sessions)
 #   HONK_PWD_ONLY  (default 1; set to 0 to include all sessions)
 #   HONK_WORKDIR   (override the filter; default: $PWD)
+#
+# Honk only reads the public `goose session list --format json` shape
+# (the documented `--format json` output). It does not touch the
+# goose SQLite sessions database; a future goose release can change
+# the storage layer freely without affecting the picker.
 
 set -euo pipefail
 
@@ -21,93 +26,6 @@ HONK_LIB_LIST_LOADED=1
 
 honk_is_positive_integer() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
-}
-
-# Apply the message-content grep filter to a raw NDJSON session list
-# (the shape honk_list_json emits). Returns the filtered NDJSON on
-# stdout. Returns 1 if the grep query itself fails (e.g. sqlite3 is
-# missing or the DB is unreadable).
-#
-# The grep pass is applied on top of whatever the caller already
-# produced — fresh fetch from goose, cached snapshot, etc. — so the
-# filter is honored uniformly regardless of cache state.
-honk_apply_grep() {
-    local raw="$1"
-    if [[ -z "${HONK_GREP:-}" ]]; then
-        printf '%s\n' "$raw"
-        return 0
-    fi
-    local match_ids
-    match_ids=$(honk_grep_session_ids "${HONK_GREP}") || return 1
-    # NDJSON of session IDs → JSON array of strings. `-s` slurps,
-    # `map(select(. != ""))` drops any blank lines from a final
-    # newline. An empty grep result yields `[]`, which `index()` never
-    # matches — the picker ends up empty, which is the right answer
-    # for "no message contains this query".
-    match_ids=$(printf '%s' "$match_ids" | jq -R . | jq -s 'map(select(. != ""))')
-    printf '%s\n' "$raw" | jq -r --argjson ids "$match_ids" \
-        'select(.id as $id | $ids | index($id))'
-}
-
-# Look up session IDs whose messages contain $1 (case-insensitive
-# substring match against the JSON content of all message parts).
-# Emits NDJSON of session IDs on stdout; one per line. Empty stdout
-# means no matches.
-#
-# The query is escaped for SQL string-literal embedding (single quotes
-# doubled) and for LIKE-pattern embedding (%, _, \ escaped with
-# backslash — the same character the SQL ESCAPE clause uses), so a
-# user's query containing quotes or LIKE wildcards is safe.
-#
-# Requires sqlite3. Returns 1 if sqlite3 is missing or the DB is
-# unreadable; callers should treat that as a hard error so a user who
-# explicitly asked for content search is told why it didn't work.
-honk_grep_session_ids() {
-    local query="$1"
-    if ! command -v sqlite3 >/dev/null 2>&1; then
-        echo "honk: grep requires sqlite3" >&2
-        return 1
-    fi
-    local db
-    db=$(honk_db_path)
-    [[ -r "$db" ]] || { echo "honk: cannot read goose DB at $db" >&2; return 1; }
-    # Escape order matters: backslash first, then % and _, so the
-    # backslashes we introduce for the LIKE wildcards don't get
-    # double-escaped by the backslash rule.
-    local q
-    q=$(printf '%s' "$query" \
-        | sed -e "s/'/''/g" \
-              -e 's/\\/\\\\/g' \
-              -e 's/%/\\%/g' \
-              -e 's/_/\\_/g')
-    sqlite3 "$db" <<SQL
-SELECT DISTINCT session_id FROM messages WHERE content_json LIKE '%${q}%' ESCAPE '\' COLLATE NOCASE
-SQL
-}
-
-# Resolve the goose sessions DB path. We let goose itself report the path
-# (via `goose info`) so we honor every override goose itself honors,
-# including $GOOSE_SHARED_SESSION_DIR. The fallback only kicks in when
-# goose can't tell us, in which case we derive the well-known XDG
-# location directly — a user who has $GOOSE_SHARED_SESSION_DIR set
-# without `goose info` available should not be silently misled.
-honk_db_path() {
-    # Prefer goose's own idea of the path. If `goose info` ever changes shape,
-    # we fall back to the well-known XDG location.
-    #
-    # `gsub(/[[:space:]]+$/, "")` trims only trailing whitespace (the common
-    # case where `goose info` ends the value with a newline or padding).
-    # We deliberately do NOT strip internal whitespace, since the user's
-    # session DB path can legitimately contain spaces (e.g. under
-    # "/home/me/My Projects/...").
-    local path
-    if path=$(goose info 2>/dev/null | awk -F': *' '/Sessions DB/ {gsub(/[[:space:]]+$/, ""); print $2; exit}'); then
-        if [[ -n "$path" && -r "$path" ]]; then
-            printf '%s\n' "$path"
-            return 0
-        fi
-    fi
-    printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/goose/sessions/sessions.db"
 }
 
 # Subtree match: does $1 (a session working_dir) live at or under $2 (a base)?
@@ -135,10 +53,8 @@ honk_list_json() {
     # interactive picker — everything except the initial fetch goes this
     # way. Falls through to the live fetch if the cache is missing or
     # unreadable so a stale $HONK_LIST_CACHE never blocks a real query.
-    # The grep filter is applied on top of either path so HONK_GREP
-    # works uniformly.
     if [[ -n "${HONK_LIST_CACHE:-}" && -r "${HONK_LIST_CACHE}" ]]; then
-        honk_apply_grep "$(cat "${HONK_LIST_CACHE}")"
+        cat "${HONK_LIST_CACHE}"
         return 0
     fi
 
@@ -204,11 +120,7 @@ honk_list_json() {
     # the --ascending flag above and we don't re-sort here.
     jq_filter+=" | @json"
 
-    # Apply the cwd/archive filters in jq, then layer the grep filter
-    # on top via honk_apply_grep — the grep hits sqlite separately so
-    # the jq filter chain stays clean and the same grep pass can be
-    # applied to cached lists.
-    honk_apply_grep "$(printf '%s\n' "$raw" | jq "${jq_args[@]}" "$jq_filter")"
+    printf '%s\n' "$raw" | jq "${jq_args[@]}" "$jq_filter"
 }
 
 # Format rows for fzf's input: TAB-separated columns that we can color/sort.
@@ -240,4 +152,84 @@ honk_list_pretty() {
         "   msgs: " + (.message_count // 0 | tostring) +
         "   cost: $" + ((.accumulated_cost // 0) | tostring)
     '
+}
+
+# ---- picker candidate extractors (Ctrl-P sub-picker inputs) ----
+#
+# These read from the same cached `goose session list --format json`
+# snapshot the picker already maintains, so they don't add any new
+# goose roundtrips and don't depend on the SQLite storage layer.
+# Both return one item per line on stdout, ready to pipe into fzf.
+
+# Build the provider sub-picker list. Emits providers in two sections:
+#   1. Providers seen in the cached session list, sorted by descending
+#      frequency (most-used first).
+#   2. A small static fallback of providers documented in goose's
+#      `goose session --help` output (anthropic, claude-code, …), for
+#      discoverability — a user who has never used a provider can still
+#      find it in the sub-picker.
+# Duplicates are removed (cache entries win). If $HONK_PROVIDER is set,
+# the current value is tagged with a " (current)" suffix so the user
+# can see what's already in effect.
+honk_provider_candidates() {
+    local current="${HONK_PROVIDER:-}"
+    local -A seen
+    local p
+
+    # Cache-derived, most-used first.
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        [[ -n "${seen[$p]:-}" ]] && continue
+        seen[$p]=1
+        if [[ "$p" == "$current" ]]; then
+            printf '%s (current)\n' "$p"
+        else
+            printf '%s\n' "$p"
+        fi
+    done < <(honk_list_json | jq -r '.provider_name // empty' \
+        | sort | uniq -c | sort -rn \
+        | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]+//')
+
+    # Static fallback for discoverability (per goose --help). Alphabetical.
+    # Users with custom providers can set HONK_PROVIDER or pass --provider
+    # on the command line — those values are not enumerated here because
+    # we have no stable way to enumerate custom providers without depending
+    # on private config formats.
+    for p in anthropic claude-code databricks gemini-cli ollama openai; do
+        [[ -n "${seen[$p]:-}" ]] && continue
+        seen[$p]=1
+        if [[ "$p" == "$current" ]]; then
+            printf '%s (current)\n' "$p"
+        else
+            printf '%s\n' "$p"
+        fi
+    done
+}
+
+# Build the model sub-picker list for a given provider. Emits models
+# in descending frequency order from the cached session list, filtered
+# to sessions whose provider_name == $1. The current override (if set
+# via $HONK_MODEL) is tagged with " (current)". Emits nothing if no
+# models have been recorded for that provider — the caller should fall
+# back to goose's default model in that case rather than blocking the
+# picker on an empty list.
+honk_model_candidates() {
+    local provider="$1"
+    local current="${HONK_MODEL:-}"
+    local -A seen
+    local m
+
+    while IFS= read -r m; do
+        [[ -z "$m" ]] && continue
+        [[ -n "${seen[$m]:-}" ]] && continue
+        seen[$m]=1
+        if [[ "$m" == "$current" ]]; then
+            printf '%s (current)\n' "$m"
+        else
+            printf '%s\n' "$m"
+        fi
+    done < <(honk_list_json | jq -r --arg p "$provider" \
+        'select(.provider_name == $p) | .model_config.model_name // empty' \
+        | sort | uniq -c | sort -rn \
+        | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]+//')
 }

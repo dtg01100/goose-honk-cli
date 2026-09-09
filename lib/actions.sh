@@ -12,8 +12,6 @@ HONK_LIB_ACTIONS_LOADED=1
 
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/list.sh"
-# shellcheck disable=SC1091
-source "$(dirname "${BASH_SOURCE[0]}")/preview.sh"
 
 # Resolve a session's working_dir. Returns empty string if unknown.
 # Uses honk_list_json so it shares the picker's cached snapshot when one
@@ -31,24 +29,34 @@ honk_session_working_dir() {
         || true
 }
 
-# Echo the tail of the conversation before handing off to goose, so the user
-# sees precisely what was last said. Reuses the preview renderer; the tail
-# stays in the terminal scrollback once goose's TUI takes over.
+# Append --provider/--model to the given argv nameref when $HONK_PROVIDER
+# / $HONK_MODEL are set. Both env vars are honored independently: setting
+# only one appends the corresponding flag, setting neither appends nothing.
 #
-# Tunable via env:
-#   HONK_RESUME_PREVIEW  (default 1; set to 0 to skip)
-#   HONK_RESUME_TAIL     number of messages to show (default 4)
-honk_show_session_tail() {
-    local sid="$1"
-    [[ "${HONK_RESUME_PREVIEW:-1}" != "1" ]] && return 0
-    local limit="${HONK_RESUME_TAIL:-4}"
-    if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
-        echo "honk: HONK_RESUME_TAIL must be a non-negative integer; using 4" >&2
-        limit=4
-    fi
-    printf '\n\033[2m── last %s messages ────────────────────────────\033[0m\n' "$limit"
-    HONK_PREVIEW_MSG_LIMIT="$limit" honk_render_messages "$sid" || true
-    printf '\033[2m──────────────────────────────────────────────────\033[0m\n\n'
+# Used by honk_action_resume / honk_action_fork / honk_action_new so the
+# override logic stays in one place. The picker's Ctrl-P sub-picker sets
+# these env vars for the picker invocation; the hun CLI exposes them as
+# `--provider` / `--model` flags with matching env vars, and the values
+# are passed through to `goose session --resume` / `--fork` / `--name`
+# via its own `--provider` / `--model` flags (documented in `goose session
+# --help` as "Override the GOOSE_PROVIDER environment variable for this
+# run"), making the override a per-invocation setting.
+#
+# Usage:
+#   local -a pm=()
+#   honk_pm_args pm
+#   exec goose session --resume --session-id "$sid" "${pm[@]}" "$@"
+honk_pm_args() {
+    local -n out=$1
+    [[ -n "${HONK_PROVIDER:-}" ]] && out+=( --provider "$HONK_PROVIDER" )
+    [[ -n "${HONK_MODEL:-}" ]]    && out+=( --model    "$HONK_MODEL" )
+    # The trailing `: ` is required: with `set -e` enabled (the default in
+    # honk and most callers), the function's return value becomes the
+    # status of its last command. When neither env var is set, the last
+    # `[[ -n "" ]]` returns 1, which would otherwise cause `set -e` to
+    # abort the action helper before it reaches the `exec goose` line.
+    # The no-op ensures honk_pm_args always returns success.
+    :
 }
 
 # Resume a session, cd-ing into its original working_dir first so any files
@@ -57,19 +65,26 @@ honk_show_session_tail() {
 # Note: shift the session id off $@ first — callers pass the id as the first
 # argument, and goose would otherwise see it twice (once via --session-id,
 # once positionally, which clap rejects as an unrecognized subcommand).
+#
+# Earlier versions echoed a conversation tail before handing off to goose.
+# That read the goose SQLite schema directly (`messages.content_json`),
+# which broke whenever goose reshaped its private storage. The metadata
+# summary in the fzf preview pane is enough for a user to pick the right
+# session; once goose takes over, the user can scroll back inside the TUI.
 honk_action_resume() {
     local sid="$1"
     shift
     local wd
     wd=$(honk_session_working_dir "$sid")
+    local -a pm=()
+    honk_pm_args pm
     if [[ -z "$wd" || ! -d "$wd" ]]; then
         printf 'honk: cannot resolve working_dir for session %s; resuming from %s\n' "$sid" "$PWD" >&2
-        exec goose session --resume --session-id "$sid" "$@"
+        exec goose session --resume --session-id "$sid" "${pm[@]}" "$@"
     fi
     printf 'honk: resuming session %s in %s\n' "$sid" "$wd" >&2
     cd "$wd"
-    honk_show_session_tail "$sid"
-    exec goose session --resume --session-id "$sid" "$@"
+    exec goose session --resume --session-id "$sid" "${pm[@]}" "$@"
 }
 
 # Fork a session — same as resume, but with --fork so we branch into a copy.
@@ -78,13 +93,14 @@ honk_action_fork() {
     shift
     local wd
     wd=$(honk_session_working_dir "$sid")
+    local -a pm=()
+    honk_pm_args pm
     if [[ -z "$wd" || ! -d "$wd" ]]; then
-        exec goose session --resume --fork --session-id "$sid" "$@"
+        exec goose session --resume --fork --session-id "$sid" "${pm[@]}" "$@"
     fi
     printf 'honk: forking session %s (new session starts in %s)\n' "$sid" "$wd" >&2
     cd "$wd"
-    honk_show_session_tail "$sid"
-    exec goose session --resume --fork --session-id "$sid" "$@"
+    exec goose session --resume --fork --session-id "$sid" "${pm[@]}" "$@"
 }
 
 # Start a brand new session in the working_dir of the selected row.
@@ -100,7 +116,9 @@ honk_action_new() {
         return 1
     fi
     cd "$wd"
-    exec goose session --name "$name"
+    local -a pm=()
+    honk_pm_args pm
+    exec goose session --name "$name" "${pm[@]}"
 }
 
 # Export a session to a JSON file in the current directory.

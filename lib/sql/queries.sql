@@ -1,5 +1,14 @@
--- Reusable SQL fragments used by honk.
--- These are read via `sqlite3 ... <<EOF` style, not by Postgres/Python.
+-- Reference queries describing the public `goose session list --format json`
+-- shape that honk consumes. The fields below are the documented
+-- `--format json` output keys; honk does not depend on any private
+-- storage schema (no reads from the goose SQLite sessions database,
+-- no assumptions about the messages table).
+--
+-- This file is documentation only — none of the queries here are
+-- executed at runtime. It exists so anyone reading the source can
+-- see the data shape honk is built against, and so a future goose
+-- release that changes the storage layer is clearly decoupled from
+-- honk's behavior.
 
 -- Sessions matching a substring of name/id/working_dir, newest first.
 -- Search term is bound by the host script via shell-side quoting; do NOT
@@ -17,51 +26,3 @@ SELECT
 FROM sessions AS s
 ORDER BY datetime(s.updated_at) DESC
 LIMIT 200;
-
--- Last N messages for a session, oldest-first within the window so the
--- preview pane reads top-down as a conversation tail.
-.last_messages
-SELECT
-    m.role,
-    m.content_json,
-    m.created_timestamp
-FROM messages AS m
-WHERE m.session_id = :session_id
-ORDER BY m.created_timestamp DESC, m.id DESC
-LIMIT :limit;
-
--- Plain-text extract of a message's user-visible body.
--- content_json is an array of typed parts: {type:"text",text:"…"} or
--- {type:"thinking",thinking:"…"} or {type:"toolRequest",…} etc. We collapse
--- all text/thinking parts to plain text; tool calls and results are surfaced
--- as `[tool:<name>]` placeholders so the preview stays readable.
---
--- This is a reference view of the SQL embedded in lib/preview.sh (which is
--- the source of truth). The runtime query applies per-part text truncation
--- (`HONK_PREVIEW_TEXT_CAP`) and appends `…` to truncated text and thinking
--- parts; the reference below shows the untruncated shape. The preview pane
--- itself falls back to `[other]` for any JSON-part type this list does not
--- enumerate (e.g. toolConfirmationRequest, resource), so future schema
--- additions do not require code changes to keep rendering.
-.message_text
-WITH parts(role, text) AS (
-    SELECT
-        m.role,
-        coalesce(
-            (SELECT group_concat(
-                CASE json_extract(value, '$.type')
-                    WHEN 'text'      THEN json_extract(value, '$.text')
-                    WHEN 'thinking'  THEN '(thinking) ' || json_extract(value, '$.thinking')
-                    WHEN 'toolRequest'    THEN '[tool:' ||
-                        coalesce(json_extract(value, '$.name'), '?') || ']'
-                    WHEN 'toolResponse'   THEN '[tool-result]'
-                    WHEN 'image'     THEN '[image]'
-                    ELSE '[other]'
-                END, char(10))
-             FROM json_each(m.content_json)),
-            ''
-        ) AS text
-    FROM messages AS m
-    WHERE m.session_id = :session_id
-)
-SELECT role, text FROM parts WHERE length(text) > 0;
