@@ -163,7 +163,7 @@ done
 IFS=$' \t\n'
 # Move our fake goose out of the way so it isn't picked up either.
 mv "$TMP/bin/goose" "$TMP/bin/.goose.disabled"
-if out=$(cd /tmp && PATH="$clean_path" "$ROOT/honk" --json 2>&1); then :; else out=""; fi
+out=$(cd /tmp && PATH="$clean_path" "$ROOT/honk" --json 2>&1) || out=""
 mv "$TMP/bin/.goose.disabled" "$TMP/bin/goose"
 [[ "$out" == *"goose is required"* ]] \
     || fail "missing goose should print an install hint. Got: $out"
