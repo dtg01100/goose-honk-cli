@@ -121,6 +121,56 @@ col_sib=$(printf '%s\n' "$out" | grep 'demo sibling' | grep -bo '/tmp/demo' | he
     || fail "--list should align the working_dir column (got demo one @$col_one, demo sibling @$col_sib). Got: $out"
 pass "--list aligns the working_dir column"
 
+# Test: --list truncates names longer than the column width so a long
+# name doesn't break working_dir alignment. The fake goose's names are
+# short, so seed a cache with a 60-char name and a sibling row.
+trunc_cache=$(mktemp "${TMPDIR:-/tmp}/honk-trunc.XXXXXX.json")
+trap 'rm -f "$trunc_cache"' RETURN
+printf '%s\n' \
+    '{"id":"long1","name":"this name is intentionally much longer than the forty-character column width that we use","working_dir":"/tmp","updated_at":"2026-08-20T16:00:00Z","message_count":0,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T16:00:00Z"}' \
+    '{"id":"shor1","name":"short name","working_dir":"/tmp","updated_at":"2026-08-20T16:00:00Z","message_count":0,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T16:00:00Z"}' \
+    > "$trunc_cache"
+out=$(cd /tmp && HONK_LIST_CACHE="$trunc_cache" "$ROOT/honk" --all --list 2>&1)
+col_long=$(printf '%s\n' "$out" | grep '^long1' | grep -bo '/tmp' | head -1 | cut -d: -f1)
+col_shor=$(printf '%s\n' "$out" | grep '^shor1' | grep -bo '/tmp' | head -1 | cut -d: -f1)
+[[ -n "$col_long" && "$col_long" == "$col_shor" ]] \
+    || fail "--list should align the working_dir column even with a long name (got long @$col_long, shor @$col_shor). Got: $out"
+# The long name should be truncated, not printed in full.
+[[ "$out" == *"much longer than the forty-character column width that we use"* ]] \
+    && fail "--list should truncate names longer than the column width. Got: $out"
+pass "--list truncates long names and keeps the column aligned"
+
+# Test: --json with no goose on PATH prints a friendly install hint
+# instead of the bare "command not found" message. PATH starts out as
+# $TMP/bin:$PATH, so to put honk in the "no goose" state we shadow the
+# real goose by moving our fake goose into a name that won't match
+# `command -v goose`, AND we strip any system PATH entries that happen
+# to contain a goose binary. (The test runner doesn't need the real
+# goose — the fake goose is what makes the rest of the suite work.)
+real_goose=$(command -v goose 2>/dev/null || true)
+real_goose_dir=""
+if [[ -n "$real_goose" ]]; then
+    real_goose_dir="$(dirname "$real_goose")"
+fi
+# Build a PATH that excludes any directory containing a goose binary.
+clean_path=""
+IFS=':'
+for d in $PATH; do
+    if [[ "$d" == "$real_goose_dir" ]]; then continue; fi
+    if [[ -x "$d/goose" || -e "$d/goose" ]]; then continue; fi
+    clean_path+="${clean_path:+:}$d"
+done
+IFS=$' \t\n'
+# Move our fake goose out of the way so it isn't picked up either.
+mv "$TMP/bin/goose" "$TMP/bin/.goose.disabled"
+out=$(cd /tmp && PATH="$clean_path" "$ROOT/honk" --json 2>&1 || true)
+mv "$TMP/bin/.goose.disabled" "$TMP/bin/goose"
+[[ "$out" == *"goose is required"* ]] \
+    || fail "missing goose should print an install hint. Got: $out"
+[[ "$out" == *"goose --version"* ]] \
+    || fail "missing goose hint should suggest 'goose --version'. Got: $out"
+pass "missing goose prints a friendly install hint"
+
 # Test: --all overrides filter
 out=$(cd /var && "$ROOT/honk" --all --list 2>&1)
 [[ "$out" == *"demo one"* ]] || fail "--all should include /tmp/demo. Got: $out"
@@ -531,31 +581,44 @@ pass "non-tty picker exits cleanly without crashing the EXIT trap"
 # skipped the goose roundtrip entirely, and left the cache — and therefore
 # the entire picker — empty: only the synthetic "new session" rows showed
 # up. End-to-end through honk_pick: the picker populates the cache before
-# its tty guard fires, so we patch the EXIT trap to preserve the cache and
-# assert that it actually contains session JSON after the run. The buggy
-# version leaves the cache at zero bytes.
-captured=$(mktemp "${TMPDIR:-/tmp}/honk-pick-cache.XXXXXX.json")
-# Copy the project into a tmp dir so the patched honk can find its lib/.
-# Patch honk_pick's EXIT trap to copy the cache to $captured before
-# removing it. The trap string is stable across versions; using @
-# as the sed delimiter keeps the `||` in the replacement from colliding
-# with the separator.
-work=$(mktemp -d "${TMPDIR:-/tmp}/honk-pick.XXXXXX")
-cp "$ROOT/honk" "$work/honk"
-cp -r "$ROOT/lib" "$work/lib"
-sed "s@trap 'rm -f \"\\\${HONK_LIST_CACHE:-}\"' EXIT@trap 'cp \"\\\${HONK_LIST_CACHE:-}\" \"${captured}\" 2>/dev/null || true; rm -f \"\\\${HONK_LIST_CACHE:-}\"' EXIT@" \
-    "$work/honk" > "$work/honk.tmp"
-mv "$work/honk.tmp" "$work/honk"
-chmod +x "$work/honk"
-HONK_PWD_ONLY=0 bash "$work/honk" </dev/null >/dev/null 2>&1 || true
-rm -rf "$work"
+# its tty guard fires, so we use the HONK_PICK_CACHE_DEBUG_DIR hook to
+# capture a copy of the cache and assert it actually contains session JSON
+# after the run. The buggy version leaves the cache at zero bytes.
+debug_dir=$(mktemp -d "${TMPDIR:-/tmp}/honk-pick-debug.XXXXXX")
+HONK_PWD_ONLY=0 HONK_PICK_CACHE_DEBUG_DIR="$debug_dir" \
+    bash "$ROOT/honk" </dev/null >/dev/null 2>&1 || true
+captured="$debug_dir/honk-pick-cache.json"
 cache_bytes=$(wc -c <"$captured" 2>/dev/null || echo 0)
 n=$(grep -c '^{' "$captured" 2>/dev/null || true)
 [[ "$cache_bytes" -gt 1 ]] \
     || fail "honk_pick should populate its cache; got $cache_bytes bytes (picker was empty under the bug)"
 [[ "$n" -ge 1 ]] \
-    || fail "honk_pick cache should contain at least one session JSON object; got $n: $(cat "$captured")"
-rm -f "$captured"
+    || fail "honk_pick cache should contain at least one session JSON object; got $n: $(cat "$captured" 2>/dev/null)"
+rm -rf "$debug_dir"
 pass "honk_pick populates the picker cache end-to-end"
+
+# Regression: the picker must tell fzf to emit the user's search query
+# alongside the key/selection via --print-query. Without it, fzf's
+# output is just "<key>\n<line>\n", and the ctrl-p reopen path
+# (which exec's a fresh honk with --query to preserve the search) had
+# no way to know what the user had typed — it took the first line of
+# fzf's output and passed that as --query, which was the fzf exit key
+# (always "ctrl-p") instead of the actual search query. The reopen
+# then started the new picker with "ctrl-p" prefilled in the search
+# box. Static check: confirm --print-query is on the fzf command line.
+if ! grep -qE -- '--print-query' "$ROOT/honk"; then
+    fail "honk_pick must pass --print-query to fzf so the user's search query is preserved on ctrl-p reopen"
+fi
+# And confirm the picker reads three lines from fzf (query, key,
+# selection) instead of the old two-line read.
+if ! grep -qE 'read -r last_query && read -r key && read -r raw_line' "$ROOT/honk"; then
+    fail "honk_pick should read (query, key, selection) from fzf --print-query output"
+fi
+# Belt-and-suspenders: the old buggy read pattern (read key, read raw_line)
+# must be gone. The new pattern starts with `read -r last_query`.
+if grep -qE '\{ read -r key && read -r raw_line; \}' "$ROOT/honk"; then
+    fail "honk_pick still uses the old two-line fzf read; query preservation on reopen is broken"
+fi
+pass "picker preserves the user's search query on ctrl-p reopen"
 
 printf '\n\033[1mall smoke tests passed\033[0m\n'

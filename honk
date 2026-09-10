@@ -182,7 +182,16 @@ honk_pick() {
     # Clean up on shell exit. The resume/fork/new actions exec into goose
     # so the cache is leaked in that path, but only one tempfile per
     # picker invocation — `/tmp` reapers tolerate that.
-    trap 'rm -f "${HONK_LIST_CACHE:-}"' EXIT
+    #
+    # HONK_PICK_CACHE_DEBUG_DIR is a test/debug hook: when set, the cache
+    # is also copied to <dir>/honk-pick-cache.json before being removed,
+    # so tests can inspect what the picker produced without patching the
+    # trap line via sed. Leaving it unset in production means no
+    # measurable overhead.
+    trap 'if [[ -n "${HONK_PICK_CACHE_DEBUG_DIR:-}" && -n "${HONK_LIST_CACHE:-}" && -r "${HONK_LIST_CACHE}" ]]; then
+            cp "${HONK_LIST_CACHE}" "${HONK_PICK_CACHE_DEBUG_DIR}/honk-pick-cache.json" 2>/dev/null || true
+        fi
+        rm -f "${HONK_LIST_CACHE:-}"' EXIT
     if ! honk_list_json > "$cache"; then
         rm -f "$cache"
         echo "honk: failed to fetch session list" >&2
@@ -242,7 +251,7 @@ honk_pick() {
         '
 
         # 3. Interactive "new in another dir…" row.
-        printf '  \u001b[2m▶  New session in another directory…  (pick one)\u001b[0m\t__PICK_DIR__\t—\t—\t—\n'
+        printf '  \033[2m▶  New session in another directory…  (pick one)\033[0m\t__PICK_DIR__\t—\t—\t—\n'
 
         # 4. Recent distinct working_dirs (most-recent first), dim & indented.
         # `// ""` drops the literal "null" that `jq -r` would emit for
@@ -252,7 +261,7 @@ honk_pick() {
             | awk '!seen[$0]++' | head -6 | while IFS= read -r wd; do
                 [[ -z "$wd" ]] && continue
                 [[ "$wd" == "$PWD" ]] && continue   # skip cwd — already covered
-                printf '    \u001b[2m→ new in  %s\u001b[0m\t__NEW_AT__%s\t—\t—\t—\n' "$wd" "$wd"
+                printf '    \033[2m→ new in  %s\033[0m\t__NEW_AT__%s\t—\t—\t—\n' "$wd" "$wd"
             done
     )
 
@@ -308,6 +317,7 @@ honk_pick() {
             --preview-window='right:45%:wrap:border-sharp' \
             --header='enter resume · ^F fork · ^N new · ^E export · ^D delete · ^A all · ^P provider/model' \
             --expect='enter,ctrl-a,ctrl-f,ctrl-n,ctrl-e,ctrl-d,ctrl-p' \
+            --print-query \
             ${query_arg:+--query "$query_arg"} \
         <<<"$fmt_rows"
     ) || {
@@ -319,10 +329,13 @@ honk_pick() {
         return 0
     }
 
-    # Without --print0, fzf emits "<key>\n<line>\n". Read both lines.
-    # Be defensive: if either is empty, the dispatch is unsafe → bail.
-    local key raw_line
-    { read -r key && read -r raw_line; } <<<"$selection" || return 0
+    # With --print-query and --expect, fzf emits three lines:
+    #   <query>          ← the user's search box (may be empty)
+    #   <key>            ← "enter", "ctrl-a", … or "esc"/"ctrl-c" when cancelled
+    #   <selected line>  ← the row the user highlighted (TAB-separated columns)
+    # Read all three. An empty key (Esc/Ctrl-C) means the user cancelled.
+    local last_query key raw_line
+    { read -r last_query && read -r key && read -r raw_line; } <<<"$selection" || return 0
     [[ -z "$key" || -z "$raw_line" ]] && return 0
     local j
     j=$(printf '%s\n' "$raw_line" | awk -F'\t' '{print $2}')
@@ -386,9 +399,9 @@ honk_pick() {
             #
             # The override is applied via exec-reopen so the prompt
             # visibly reflects it. Cursor position is lost across the
-            # reopen, but the user's search query is preserved.
-            local new_provider new_model last_query
-            last_query=$(printf '%s\n' "$selection" | head -1)
+            # reopen, but the user's search query is preserved (read
+            # from fzf's --print-query output above).
+            local new_provider new_model
             if ! new_provider=$(honk_provider_candidates \
                 | honk_fzf --prompt='provider › ' \
                            --no-sort --height=60% --layout=reverse --border \
@@ -419,9 +432,7 @@ honk_pick() {
             (( pwd_only == 0 )) && reopen+=( --all )
             reopen+=( --provider "$new_provider" )
             [[ -n "$new_model" ]] && reopen+=( --model "$new_model" )
-            if [[ -n "$last_query" && "$last_query" != "$(printf '\n')" ]]; then
-                reopen+=( --query "$last_query" )
-            fi
+            [[ -n "$last_query" ]] && reopen+=( --query "$last_query" )
             exec "$(readlink -f "$0")" "${reopen[@]}"
             ;;
         ctrl-f)

@@ -33,7 +33,14 @@ else
         exit 2
     fi
     dest="$1"
-    mkdir -p "$dest"
+    if [[ ! -d "$dest" ]]; then
+        mkdir -p "$dest" || {
+            echo "install.sh: cannot create $dest" >&2; exit 1; }
+    fi
+    if [[ ! -w "$dest" ]]; then
+        echo "install.sh: $dest is not writable; rerun with a directory you own, or as root." >&2
+        exit 1
+    fi
 fi
 
 link="$dest/honk"

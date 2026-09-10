@@ -19,9 +19,9 @@ read [UPSTREAM.md](UPSTREAM.md) before proposing changes to goose.
 
 ## Development setup
 
-Honk has no build step. Install Bash 4+, jq, sqlite3, and ShellCheck. The smoke
-test uses a temporary fake `goose` executable and does not need a live session
-database.
+Honk has no build step. Install Bash 4+, `fzf`, jq, goose, and ShellCheck.
+The smoke test uses a temporary fake `goose` executable and does not need a
+live session database.
 
 ## Checks
 
@@ -33,8 +33,8 @@ make test
 Or run the commands directly:
 
 ```sh
-bash -n honk install.sh lib/*.sh tests/*.sh
-shellcheck -s bash -x honk install.sh lib/*.sh tests/*.sh
+bash -n honk install.sh lib/*.sh tests/*.sh tools/*.sh
+shellcheck -s bash -x honk install.sh lib/*.sh tests/*.sh tools/*.sh
 ./tests/smoke.sh
 ```
 

@@ -89,11 +89,10 @@ To choose another directory:
 ```
 
 The destination must not already contain a non-symlink file named `honk`.
-To uninstall, remove only the symlink created by the installer:
+To uninstall, remove only the symlink created by the installer, or run
+`./tools/uninstall.sh` to check the installer's default locations:
 
-```sh
 rm ~/.local/bin/honk   # or: rm ~/bin/honk
-```
 
 ## Usage
 
@@ -205,9 +204,14 @@ deletion is performed only after the confirmation prompt.
 Run the checks from a checkout:
 
 ```sh
-make check       # Bash syntax and ShellCheck
-make test        # non-destructive smoke tests
+make doctor     # verify runtime requirements (bash >=4, fzf >=0.40, jq, goose)
+make check      # Bash syntax and ShellCheck
+make test       # non-destructive smoke tests
 ```
+
+For interactive debugging of the picker (dump the rows that would be
+piped to fzf), use `tools/debug-picker.sh` directly; its output goes to
+`/tmp/honk-debug-rows.tsv` by default.
 
 The smoke tests inject a temporary fake `goose` command, so they do not need
 an active goose installation or touch real sessions. They do use jq, which is

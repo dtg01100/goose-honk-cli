@@ -49,13 +49,13 @@ export HONK_LIMIT HONK_PWD_ONLY HONK_WORKDIR
         | @tsv
     '
 
-    printf '  \u001b[2m▶  New session in another directory…  (pick one)\u001b[0m\t__PICK_DIR__\t—\t—\t—\n'
+    printf '  \033[2m▶  New session in another directory…  (pick one)\033[0m\t__PICK_DIR__\t—\t—\t—\n'
 
     honk_list_json | jq -r '.working_dir // ""' \
         | awk '!seen[$0]++' | head -6 | while IFS= read -r wd; do
             [[ -z "$wd" ]] && continue
             [[ "$wd" == "$PWD" ]] && continue
-            printf '    \u001b[2m→ new in  %s\u001b[0m\t__NEW_AT__%s\t—\t—\t—\n' "$wd" "$wd"
+            printf '    \033[2m→ new in  %s\033[0m\t__NEW_AT__%s\t—\t—\t—\n' "$wd" "$wd"
         done
 } > "$OUT"
 

@@ -28,6 +28,7 @@ honk_is_positive_integer() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
+
 # Subtree match: does $1 (a session working_dir) live at or under $2 (a base)?
 # Returns 0 (true) or 1 (false). Both arguments must be absolute paths.
 honk_is_under() {
@@ -80,7 +81,11 @@ honk_list_json() {
         return 2
     fi
     command -v goose >/dev/null 2>&1 || {
-        echo "honk: goose is required to list sessions" >&2
+        cat >&2 <<EOF
+honk: goose is required to list sessions but was not found on PATH.
+  Install goose 1.40 or newer from https://github.com/aaif-goose/goose
+  and verify with:  goose --version
+EOF
         return 1
     }
 
@@ -88,10 +93,12 @@ honk_list_json() {
     [[ "$ascending" == "1" ]] && args+=( --ascending )
 
     local raw
-    raw=$(goose session list "${args[@]}" 2>/dev/null) || {
-        echo "honk: failed to query goose session list" >&2
+    if ! raw=$(goose session list "${args[@]}" 2>&1); then
+        echo "honk: failed to query goose session list:" >&2
+        printf '  %s\n' "$raw" | sed 's/^/  /' >&2
+        echo "  Try: goose session list --format json" >&2
         return 1
-    }
+    fi
 
     # jq filter:
     #   - drop array wrap, emit one object per line
@@ -145,7 +152,9 @@ honk_list_pretty() {
     honk_list_json | jq -r '
         def fmt_date: sub("T"; " ") | sub("Z$"; "");
         # Pad s to n chars (never negative); " *" repeats a string n times.
-        def pad(n; s): s + (" " * ([0, n - (s | length)] | max));
+        # Truncate first so a name longer than the column width cannot break
+        # the working_dir alignment.
+        def pad(n; s): (s | .[0:n]) + (" " * ([0, n - ((s | .[0:n]) | length)] | max));
         "\(.id)  " + pad(40; .name // "(unnamed)") +
         "  " + ((.working_dir // "") | tostring) +
         "\n        updated: " + ((.updated_at // "") | fmt_date) +

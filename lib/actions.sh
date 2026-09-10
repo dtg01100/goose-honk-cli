@@ -83,7 +83,7 @@ honk_action_resume() {
         exec goose session --resume --session-id "$sid" "${pm[@]}" "$@"
     fi
     printf 'honk: resuming session %s in %s\n' "$sid" "$wd" >&2
-    cd "$wd"
+    cd "$wd" || { echo "honk: cannot cd to $wd" >&2; return 1; }
     exec goose session --resume --session-id "$sid" "${pm[@]}" "$@"
 }
 
@@ -99,7 +99,7 @@ honk_action_fork() {
         exec goose session --resume --fork --session-id "$sid" "${pm[@]}" "$@"
     fi
     printf 'honk: forking session %s (new session starts in %s)\n' "$sid" "$wd" >&2
-    cd "$wd"
+    cd "$wd" || { echo "honk: cannot cd to $wd" >&2; return 1; }
     exec goose session --resume --fork --session-id "$sid" "${pm[@]}" "$@"
 }
 
@@ -115,7 +115,7 @@ honk_action_new() {
         echo "honk: aborting — empty session name" >&2
         return 1
     fi
-    cd "$wd"
+    cd "$wd" || { echo "honk: cannot cd to $wd" >&2; return 1; }
     local -a pm=()
     honk_pm_args pm
     exec goose session --name "$name" "${pm[@]}"
