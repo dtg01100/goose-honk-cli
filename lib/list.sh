@@ -5,6 +5,7 @@
 #   honk_list_json            → prints newline-delimited JSON, one object per session
 #   honk_list_fzf             → prints fzf-friendly rows (TSV-ish), id first
 #   honk_list_pretty          → pretty human-readable table
+#   honk_picker_rows          → the exact TSV rows fed to the picker's fzf
 #
 # Tunable via env:
 #   HONK_LIMIT     (default 50)
@@ -26,18 +27,6 @@ HONK_LIB_LIST_LOADED=1
 
 honk_is_positive_integer() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
-}
-
-
-# Subtree match: does $1 (a session working_dir) live at or under $2 (a base)?
-# Returns 0 (true) or 1 (false). Both arguments must be absolute paths.
-honk_is_under() {
-    local target="${1%/}" base="${2%/}"
-    [[ -z "$base" ]] && return 0
-    case "$target" in
-        "$base"|"$base"/*) return 0 ;;
-        *)                  return 1 ;;
-    esac
 }
 
 # Emit newline-delimited JSON for every session after applying filters.
@@ -63,6 +52,8 @@ honk_list_json() {
     local ascending="${HONK_ASCENDING:-0}"
     local pwd_only="${HONK_PWD_ONLY:-1}"
     local workdir="${HONK_WORKDIR:-$PWD}"
+    # Strip a trailing slash so /tmp/demo/ matches /tmp/demo exactly. Keep "/".
+    [[ "$workdir" != "/" ]] && workdir="${workdir%/}"
 
     if ! honk_is_positive_integer "$limit"; then
         echo "honk: HONK_LIMIT must be a positive integer" >&2
@@ -112,8 +103,8 @@ EOF
     local jq_filter='.[]'
     if [[ "$pwd_only" == "1" ]]; then
         jq_args+=( --arg workdir "$workdir" )
-        # Subtree match (at-or-under), mirroring honk_is_under: exact equality or
-        # base + "/" prefix. Null-safe, and "startswith" here is literal
+        # Subtree match (at-or-under): exact equality or base + "/" prefix.
+        # Null-safe, and "startswith" here is literal
         # string matching, so a cwd of /tmp/foo no longer admits /tmp/foobar.
         # This assignment intentionally appends a literal jq program.
         # shellcheck disable=SC2016
@@ -128,6 +119,51 @@ EOF
     jq_filter+=" | @json"
 
     printf '%s\n' "$raw" | jq "${jq_args[@]}" "$jq_filter"
+}
+
+# Build the picker rows from the cached session snapshot. One source of truth
+# for honk and tools/debug-picker.sh so the debug view can't drift.
+# Col 1 is what fzf displays *and searches* (--with-nth=1), so the session id
+# is included there in dim text; col 2 remains the machine-readable action key.
+honk_picker_rows() {
+    local relbase="${HONK_WORKDIR:-$PWD}"
+    [[ "$relbase" != "/" ]] && relbase="${relbase%/}"
+
+    # 1. Top-of-list: start a new session in $PWD.
+    printf '  \033[1m▶  New session here\033[0m  \033[2m— %s\033[0m\t__NEW_HERE__\t—\t—\t—\n' "$PWD"
+
+    # 2. Real sessions (newest first).
+    honk_list_json | jq -r --arg relbase "$relbase" '
+        . as $s
+        | ((.working_dir // "") as $wd
+           | if ($wd == $relbase or ($wd | startswith($relbase + "/")))
+             then "." + ($wd | ltrimstr($relbase))   # literal, no regex
+             else $wd end) as $rel
+        | [
+            "  " + (($s.name // "(unnamed)") | .[0:50]) +
+                "  \u001b[2m" + $rel + "\u001b[0m" +
+                "   \u001b[2m" + ($s.message_count // 0 | tostring) + " msgs  $" +
+                ($s.accumulated_cost // 0 | tostring) + "  " + ($s.updated_at // "") +
+                "  [" + ($s.id // "") + "]\u001b[0m",
+            $s.id,
+            "—",
+            "—",
+            "—"
+          ]
+        | @tsv
+    '
+
+    # 3. Interactive "new in another dir…" row.
+    printf '  \033[2m▶  New session in another directory…  (pick one)\033[0m\t__PICK_DIR__\t—\t—\t—\n'
+
+    # 4. Recent distinct working_dirs (most-recent first), dim & indented.
+    # `// ""` keeps a missing/null working_dir from becoming "null" here.
+    honk_list_json | jq -r '.working_dir // ""' \
+        | awk '!seen[$0]++' | head -6 | while IFS= read -r wd; do
+            [[ -z "$wd" ]] && continue
+            [[ "$wd" == "$PWD" ]] && continue
+            printf '    \033[2m→ new in  %s\033[0m\t__NEW_AT__%s\t—\t—\t—\n' "$wd" "$wd"
+        done
 }
 
 # Format rows for fzf's input: TAB-separated columns that we can color/sort.

@@ -167,6 +167,18 @@ honk_pick() {
         return 1
     fi
 
+    # Require a tty before doing any work. Without it, fzf --expect blocks on
+    # stdin forever, and a goose query here would only produce a misleading
+    # error when goose is also missing.
+    if [[ ! -t 1 || ! -t 2 ]]; then
+        echo "honk: the interactive picker needs a tty." >&2
+        echo "    For non-interactive use, try one of:" >&2
+        echo "      honk --list              # pretty text listing" >&2
+        echo "      honk --json              # newline-delimited JSON" >&2
+        echo "      honk -r <fragment>       # fuzzy-resolve & resume" >&2
+        return 1
+    fi
+
     # Snapshot the session list once. The picker builds rows from this
     # call, the recent-directories strip uses it again, the pickdir action
     # uses it again, and the fzf preview pane (which runs on every cursor
@@ -203,22 +215,12 @@ honk_pick() {
     # roundtrip instead of re-querying goose on every tick.
     export HONK_LIST_CACHE="$cache"
 
-    # Safety net 1: require a tty. Without it, fzf --expect will block on stdin
-    # forever. Direct the user to the non-fzf forms instead.
-    if [[ ! -t 1 || ! -t 2 ]]; then
-        echo "honk: the interactive picker needs a tty." >&2
-        echo "    For non-interactive use, try one of:" >&2
-        echo "      honk --list              # pretty text listing" >&2
-        echo "      honk --json              # newline-delimited JSON" >&2
-        echo "      honk -r <fragment>       # fuzzy-resolve & resume" >&2
-        return 1
-    fi
-
     # Compose the picker rows. Format per row:
     #   <display>\t<id-or-marker>\t<…unused trailing…>
-    # Col 1 is what fzf displays (via --with-nth=1). Col 2 is the machine-
-    # readable key we route actions on; that's also what the preview pane
-    # passes to lib/preview.sh via the {2} token.
+    # Col 1 is what fzf displays and searches (via --with-nth=1); the shared
+    # row builder includes the id there in dim text so it stays searchable.
+    # Col 2 is the machine-readable key we route actions on; that's also what
+    # the preview pane passes to lib/preview.sh via the {2} token.
     #
     # Layout (top-down, oldest last):
     #   [synthetic]   ▶  New session here  (cwd)            ← bright, top-of-list
@@ -226,44 +228,7 @@ honk_pick() {
     #   [synthetic]   ▶  New session at…  (pick a directory)  ← dim
     #   [synthetic]   → recent project dirs                  ← dim, indented
     local fmt_rows
-    fmt_rows=$(
-        # 1. Top-of-list: start a new session in $PWD.
-        printf '  \033[1m▶  New session here\033[0m  \033[2m— %s\033[0m\t__NEW_HERE__\t—\t—\t—\n' "$PWD"
-
-        # 2. Real sessions (newest first). Each row is one human-readable line.
-        honk_list_json | jq -r --arg relbase "$workdir" '
-            . as $s
-            | ((.working_dir // "") as $wd
-               | if ($wd == $relbase or ($wd | startswith($relbase + "/")))
-                 then "." + ($wd | ltrimstr($relbase))   # show as ./rel (literal, no regex)
-                 else $wd end) as $rel
-            | [
-                "  " + (($s.name // "(unnamed)") | .[0:50]) +
-                    "  \u001b[2m" + $rel + "\u001b[0m" +
-                    "   \u001b[2m" + ($s.message_count // 0 | tostring) + " msgs  $" +
-                    ($s.accumulated_cost // 0 | tostring) + "  " + ($s.updated_at // "") + "\u001b[0m",
-                $s.id,
-                "—",
-                "—",
-                "—"
-              ]
-            | @tsv
-        '
-
-        # 3. Interactive "new in another dir…" row.
-        printf '  \033[2m▶  New session in another directory…  (pick one)\033[0m\t__PICK_DIR__\t—\t—\t—\n'
-
-        # 4. Recent distinct working_dirs (most-recent first), dim & indented.
-        # `// ""` drops the literal "null" that `jq -r` would emit for
-        # sessions missing/null working_dir, so the `[[ -z "$wd" ]]`
-        # guard below stays correct.
-        honk_list_json | jq -r '.working_dir // ""' \
-            | awk '!seen[$0]++' | head -6 | while IFS= read -r wd; do
-                [[ -z "$wd" ]] && continue
-                [[ "$wd" == "$PWD" ]] && continue   # skip cwd — already covered
-                printf '    \033[2m→ new in  %s\033[0m\t__NEW_AT__%s\t—\t—\t—\n' "$wd" "$wd"
-            done
-    )
+    fmt_rows=$(honk_picker_rows)
 
     # Preview pane gets the session id from column 2 of the input line.
     local preview_cmd="bash '$HONK_LIB/preview.sh' {2}"
@@ -384,6 +349,7 @@ honk_pick() {
             if [[ -n "${HONK_MODEL:-}" ]]; then
                 reopen+=( --model "$HONK_MODEL" )
             fi
+            [[ -n "$last_query" ]] && reopen+=( --query "$last_query" )
             exec "$(readlink -f "$0")" "${reopen[@]}"
             ;;
         ctrl-p)
@@ -500,6 +466,7 @@ while (($#)); do
         --json=*)         json=1 ;;   # ignore =value; flag is boolean
         -r|--resume)      mode="resolve"; shift; query="${1:-}"; [[ -z "$query" ]] && { echo "honk: -r needs an argument" >&2; exit 2; } ;;
         -r=*)             mode="resolve"; query="${1#*=}"; [[ -z "$query" ]] && { echo "honk: -r needs an argument" >&2; exit 2; } ;;
+        --resume=*)       mode="resolve"; query="${1#*=}"; [[ -z "$query" ]] && { echo "honk: --resume needs an argument" >&2; exit 2; } ;;
         --working-dir)    shift; workdir="${1:-}"; [[ -z "$workdir" ]] && { echo "honk: --working-dir needs an argument" >&2; exit 2; } ;;
         --working-dir=*)  workdir="${1#*=}"; [[ -z "$workdir" ]] && { echo "honk: --working-dir needs an argument" >&2; exit 2; } ;;
         -w)               shift; workdir="${1:-}"; [[ -z "$workdir" ]] && { echo "honk: -w needs an argument" >&2; exit 2; } ;;

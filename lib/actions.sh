@@ -125,6 +125,12 @@ honk_action_new() {
 honk_action_export() {
     local sid="$1"
     local target="${2:-./${sid}.json}"
+    # Ctrl-E always targets ./<id>.json; don't silently clobber an earlier
+    # export. Pass an explicit second argument to choose another path.
+    if [[ -e "$target" ]]; then
+        echo "honk: export target already exists: $target (choose another path)" >&2
+        return 1
+    fi
     # goose session export takes -o/--output for the destination file.
     goose session export --session-id "$sid" --output "$target"
     printf 'honk: exported %s → %s\n' "$sid" "$target" >&2

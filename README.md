@@ -99,6 +99,7 @@ rm ~/.local/bin/honk   # or: rm ~/bin/honk
 ```sh
 honk                         # interactive picker
 honk -r CI                   # fuzzy-resume a matching session
+honk --resume=CI             # same, using the --flag=value form
 honk --list                  # pretty text listing
 honk --json                  # one JSON object per line
 honk --working-dir ~/p      # restrict results to ~/p and its children
@@ -119,11 +120,14 @@ honk --help                  # full usage
 | `Enter` | Resume the selected session in its original `working_dir` |
 | `Ctrl-F` | Fork the selected session with goose’s `--fork` mode |
 | `Ctrl-N` | Start a new session in the selected session’s directory |
-| `Ctrl-E` | Export the session JSON to `./<id>.json` |
+| `Ctrl-E` | Export the session JSON to `./<id>.json` (refuses to overwrite) |
 | `Ctrl-D` | Delete the session after a `y/N` confirmation |
 | `Ctrl-A` | Toggle the cwd-only/all-sessions filter |
 | `Ctrl-P` | Pick provider/model for the next launch (mirrors the Goose Desktop app's per-session model selector) |
 | `Esc` / `Ctrl-C` | Cancel |
+
+Both filter toggles (`Ctrl-A` and `Ctrl-P`) keep the search query you typed
+across the picker reopen.
 
 Search fields are name, ID, and working directory. The `goose` session list is
 queried for metadata; the preview pane reads from the same snapshot the picker
@@ -165,7 +169,7 @@ options override them:
 | `HONK_ARCHIVED` | `0` | Include archived sessions when set to `1` |
 | `HONK_PWD_ONLY` | `1` | Filter to the cwd subtree; set to `0` for all sessions |
 | `HONK_WORKDIR` | current directory | Override the cwd filter base |
-| `HONK_FZF_TIMEOUT` | `600` | Picker idle timeout in seconds |
+| `HONK_FZF_TIMEOUT` | `600` | Picker idle timeout in seconds (ignored when `timeout(1)` is unavailable) |
 | `HONK_PROVIDER` | unset | Override provider for the next launch (passed to `goose session --provider`); see `--provider` |
 | `HONK_MODEL` | unset | Override model for the next launch (passed to `goose session --model`); see `--model` |
 

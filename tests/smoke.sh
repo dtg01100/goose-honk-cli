@@ -100,6 +100,19 @@ if [[ "$out" == *"demo two"* ]]; then
 fi
 pass "cwd filter matches subtree, not prefix"
 
+# Test: a trailing slash on the workdir must not hide sessions at that exact
+# directory. The filter normalizes /tmp/demo/ to /tmp/demo before matching.
+out=$(cd /var && HONK_WORKDIR=/tmp/demo/ "$ROOT/honk" --list 2>&1)
+[[ "$out" == *"demo one"* ]] \
+    || fail "HONK_WORKDIR=/tmp/demo/ should still match /tmp/demo. Got: $out"
+if [[ "$out" == *"demo sibling"* ]]; then
+    fail "trailing slash must not widen the subtree. Got: $out"
+fi
+out=$(cd /var && "$ROOT/honk" --working-dir /tmp/demo/ --list 2>&1)
+[[ "$out" == *"demo one"* ]] \
+    || fail "--working-dir /tmp/demo/ should still match /tmp/demo. Got: $out"
+pass "trailing slash in workdir is normalized"
+
 # Test: -w is the documented short form of --working-dir. The fake
 # goose always populates working_dir, so we just verify the same
 # subtree match applies whether the flag is long or short.
@@ -124,8 +137,7 @@ pass "--list aligns the working_dir column"
 # Test: --list truncates names longer than the column width so a long
 # name doesn't break working_dir alignment. The fake goose's names are
 # short, so seed a cache with a 60-char name and a sibling row.
-trunc_cache=$(mktemp "${TMPDIR:-/tmp}/honk-trunc.XXXXXX.json")
-trap 'rm -f "$trunc_cache"' RETURN
+trunc_cache="$TMP/honk-trunc.json"
 printf '%s\n' \
     '{"id":"long1","name":"this name is intentionally much longer than the forty-character column width that we use","working_dir":"/tmp","updated_at":"2026-08-20T16:00:00Z","message_count":0,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T16:00:00Z"}' \
     '{"id":"shor1","name":"short name","working_dir":"/tmp","updated_at":"2026-08-20T16:00:00Z","message_count":0,"accumulated_cost":0,"archived_at":null,"last_message_at":"2026-08-20T16:00:00Z"}' \
@@ -213,6 +225,16 @@ out=$("$ROOT/honk" --limit= --list 2>&1) || true
 [[ "$out" == *"--limit needs an argument"* ]] \
     || fail "--limit= (empty) should be rejected. Got: $out"
 pass "--flag=value syntax works for --limit, -w"
+
+# Test: the long resume flag accepts the =value form too. Every other
+# value-taking flag already does; --resume used to be the lone exception.
+out=$(cd /tmp && "$ROOT/honk" --resume="demo one" </dev/null 2>&1) || true
+[[ "$out" == *"abc123"* ]] \
+    || fail "--resume=demo one should resolve to abc123. Got: $out"
+out=$("$ROOT/honk" --resume= </dev/null 2>&1) || true
+[[ "$out" == *"--resume needs an argument"* ]] \
+    || fail "--resume= (empty) should be rejected. Got: $out"
+pass "--resume=value form works"
 
 # Test: boolean flags also accept the `--flag=value` form for symmetry
 # with value-taking flags. The value is ignored (the flag is still
@@ -482,6 +504,54 @@ rm -f "$cache_file"
     || fail "model candidates should be empty for unrecorded provider. Got: [$out]"
 pass "honk_model_candidates returns empty for unrecorded provider"
 
+# Test: session ids are searchable in the picker. fzf searches col 1 only
+# (--with-nth=1), so the shared row builder must put the id there in addition
+# to col 2. Exercise the real fzf matcher against a rendered row.
+cache_file=$(mktemp "${TMPDIR:-/tmp}/honk-rows.XXXXXX.json")
+printf '%s\n' \
+    '{"id":"abc123","name":"demo one","working_dir":"/tmp/demo","message_count":1,"accumulated_cost":0.01,"updated_at":"2026-08-20T16:50:00Z"}' \
+    > "$cache_file"
+rows=$(cd /tmp && HONK_LIST_CACHE="$cache_file" HONK_PWD_ONLY=0 \
+    bash -c 'source "$1/lib/list.sh"; honk_picker_rows' _ "$ROOT")
+display=$(printf '%s\n' "$rows" | grep 'demo one' | awk -F'\t' '{print $1}')
+matched=$(printf '%s\n' "$display" | fzf --filter=abc123 --ansi)
+[[ -n "$matched" ]] \
+    || fail "picker row should be searchable by session id. Row: $display"
+rm -f "$cache_file"
+# The debug tool must use the same helper instead of a copied row builder.
+grep -q 'honk_picker_rows' "$ROOT/tools/debug-picker.sh" \
+    || fail "debug-picker.sh should use the shared honk_picker_rows helper"
+pass "session ids are searchable and debug-picker shares the row builder"
+
+# Test: export must not silently overwrite an existing file. Ctrl-E always
+# targets ./<id>.json, so a second export would otherwise destroy the first.
+target="$TMP/existing-export.json"
+printf 'previous export\n' > "$target"
+out=$(bash -c 'source "$1/lib/actions.sh"; honk_action_export abc123 "$2"' _ "$ROOT" "$target" 2>&1) || true
+[[ "$out" == *"already exists"* ]] \
+    || fail "export should refuse to overwrite an existing file. Got: $out"
+[[ "$(cat "$target")" == "previous export" ]] \
+    || fail "export overwrote the existing file"
+new_target="$TMP/new-export.json"
+out=$(bash -c 'source "$1/lib/actions.sh"; honk_action_export abc123 "$2"' _ "$ROOT" "$new_target" 2>&1) || true
+[[ "$out" == *"exported abc123"* ]] \
+    || fail "export to a fresh path should succeed. Got: $out"
+pass "export refuses to overwrite an existing file"
+
+# Test: doctor enforces the documented goose >= 1.40 requirement, not just
+# the binary's presence.
+mkdir -p "$TMP/oldbin" "$TMP/newbin"
+printf '#!/usr/bin/env bash\necho "goose version 1.39.0"\n' > "$TMP/oldbin/goose"
+printf '#!/usr/bin/env bash\necho "goose version 1.40.0"\n' > "$TMP/newbin/goose"
+chmod +x "$TMP/oldbin/goose" "$TMP/newbin/goose"
+out=$(PATH="$TMP/oldbin:$PATH" bash "$ROOT/tools/doctor.sh" 2>&1) || true
+[[ "$out" == *"goose < 1.40"* ]] \
+    || fail "doctor should reject goose 1.39. Got: $out"
+out=$(PATH="$TMP/newbin:$PATH" bash "$ROOT/tools/doctor.sh" 2>&1) || true
+[[ "$out" == *"all runtime requirements satisfied"* ]] \
+    || fail "doctor should accept goose 1.40. Got: $out"
+pass "doctor checks the goose version"
+
 # Test: --provider / --model CLI flags parse and are accepted on --list.
 # We `cd /tmp` first so the cwd-only filter (HONK_PWD_ONLY=1, the default)
 # admits the fake goose's /tmp/demo and /tmp working_dirs.
@@ -576,19 +646,40 @@ err=$(bash "$ROOT/honk" </dev/null 2>&1; echo "rc=$?")
     || fail "non-tty picker must not trip set -u in its EXIT trap; got: $err"
 pass "non-tty picker exits cleanly without crashing the EXIT trap"
 
+# Test: the tty guard must fire before honk queries goose. Without goose on
+# PATH, a non-tty picker should still report the tty problem, not a missing-
+# goose error from the fetch that used to happen first.
+out=$(PATH="$clean_path" bash "$ROOT/honk" </dev/null 2>&1) || true
+[[ "$out" == *"interactive picker needs a tty"* ]] \
+    || fail "non-tty picker should check the tty first. Got: $out"
+if [[ "$out" == *"goose is required"* ]]; then
+    fail "non-tty picker must not query goose before the tty guard. Got: $out"
+fi
+pass "tty guard runs before the goose query"
+
 # Regression: honk_pick creates an empty tempfile with mktemp() and then
 # writes the session list into it with the first call to honk_list_json.
 # An earlier version exported HONK_LIST_CACHE *before* that first call, so
 # honk_list_json short-circuited to the empty (but readable) mktemp file,
 # skipped the goose roundtrip entirely, and left the cache — and therefore
-# the entire picker — empty: only the synthetic "new session" rows showed
-# up. End-to-end through honk_pick: the picker populates the cache before
-# its tty guard fires, so we use the HONK_PICK_CACHE_DEBUG_DIR hook to
-# capture a copy of the cache and assert it actually contains session JSON
-# after the run. The buggy version leaves the cache at zero bytes.
+# the entire picker — empty. The tty guard now runs before the fetch, so run
+# honk under a pty (script(1)) with a fake fzf that exits like Esc, then use
+# HONK_PICK_CACHE_DEBUG_DIR to inspect the cache the picker produced.
 debug_dir=$(mktemp -d "${TMPDIR:-/tmp}/honk-pick-debug.XXXXXX")
-HONK_PWD_ONLY=0 HONK_PICK_CACHE_DEBUG_DIR="$debug_dir" \
-    bash "$ROOT/honk" </dev/null >/dev/null 2>&1 || true
+cat >"$TMP/bin/fzf" <<'EOS'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 130  # same status fzf returns on Esc/Ctrl-C
+EOS
+chmod +x "$TMP/bin/fzf"
+if script -qec true /dev/null >/dev/null 2>&1; then
+    HONK_PWD_ONLY=0 HONK_PICK_CACHE_DEBUG_DIR="$debug_dir" \
+        script -qec "$ROOT/honk" /dev/null >/dev/null 2>&1 || true
+else  # BSD/macOS script(1)
+    HONK_PWD_ONLY=0 HONK_PICK_CACHE_DEBUG_DIR="$debug_dir" \
+        script -q /dev/null "$ROOT/honk" >/dev/null 2>&1 || true
+fi
+rm -f "$TMP/bin/fzf"
 captured="$debug_dir/honk-pick-cache.json"
 cache_bytes=$(wc -c <"$captured" 2>/dev/null || echo 0)
 n=$(grep -c '^{' "$captured" 2>/dev/null || true)
@@ -621,6 +712,13 @@ fi
 if grep -qE '\{ read -r key && read -r raw_line; \}' "$ROOT/honk"; then
     fail "honk_pick still uses the old two-line fzf read; query preservation on reopen is broken"
 fi
-pass "picker preserves the user's search query on ctrl-p reopen"
+# Both reopen paths (Ctrl-A and Ctrl-P) must forward --query. Count the
+# forwarding lines rather than just checking that one of them exists.
+# The literal $last_query is what we're matching, not an expansion.
+# shellcheck disable=SC2016
+n=$(grep -c 'reopen+=( --query "$last_query" )' "$ROOT/honk" || true)
+[[ "$n" -eq 2 ]] \
+    || fail "both Ctrl-A and Ctrl-P should forward the search query (found $n forwards)"
+pass "picker preserves the user's search query on both reopens"
 
 printf '\n\033[1mall smoke tests passed\033[0m\n'

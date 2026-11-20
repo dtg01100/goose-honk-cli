@@ -63,7 +63,15 @@ else
 fi
 
 have_cmd jq jq --version
-have_cmd goose goose --version
+
+# goose — required, >= 1.40 (matches README and the session-list flag contract)
+if command -v goose >/dev/null 2>&1; then
+    goose_ver=$(goose --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)
+    have_version_ge goose "$goose_ver" 1 40
+else
+    printf '  \033[31m✗\033[0m goose (not found on PATH)\n'
+    missing+=("goose")
+fi
 
 # readlink -f (or equivalent) — used by the picker cache and install.sh
 if readlink -f / >/dev/null 2>&1; then

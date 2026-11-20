@@ -24,12 +24,12 @@ exports, database files, credentials, or other private conversation content.
 
 ## Security considerations
 
-Honk is a local launcher around the goose CLI and SQLite session database.
-It does not intentionally transmit data over the network, but users should
+Honk is a local launcher around the goose CLI and the session metadata it
+reports. It does not intentionally transmit data over the network, but users should
 still:
 
 - install it from a trusted checkout and review changes before upgrading;
-- keep the goose database and exported session files private;
+- keep goose session data and exported session files private;
 - review paths and session IDs before using export, resume, or delete actions;
 - protect the same accounts and host access used by goose itself.
 

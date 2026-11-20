@@ -25,39 +25,9 @@ printf 'honk out  = %s\n' "$OUT" >&2
 
 export HONK_LIMIT HONK_PWD_ONLY HONK_WORKDIR
 
-# Build the same rows honk builds for the picker.
-{
-    printf '  \033[1m▶  New session here\033[0m  \033[2m— %s\033[0m\t__NEW_HERE__\t—\t—\t—\n' "$PWD"
-
-    # Mirror honk's row builder exactly: pass HONK_WORKDIR through as the
-    # base so the relative-path math honors `--working-dir`, and use
-    # `// ""` to coalesce missing working_dir so a session without one
-    # doesn't render as the literal string "null".
-    honk_list_json | jq -r --arg relbase "$WORKDIR" '
-        . as $s
-        | ((.working_dir // "") as $wd
-           | if ($wd == $relbase or ($wd | startswith($relbase + "/")))
-             then "." + ($wd | ltrimstr($relbase))
-             else $wd end) as $rel
-        | [
-            "  " + (($s.name // "(unnamed)") | .[0:50]) +
-                "  \u001b[2m" + $rel + "\u001b[0m" +
-                "   \u001b[2m" + ($s.message_count // 0 | tostring) + " msgs  $" +
-                ($s.accumulated_cost // 0 | tostring) + "  " + ($s.updated_at // "") + "\u001b[0m",
-            $s.id, "—", "—", "—"
-          ]
-        | @tsv
-    '
-
-    printf '  \033[2m▶  New session in another directory…  (pick one)\033[0m\t__PICK_DIR__\t—\t—\t—\n'
-
-    honk_list_json | jq -r '.working_dir // ""' \
-        | awk '!seen[$0]++' | head -6 | while IFS= read -r wd; do
-            [[ -z "$wd" ]] && continue
-            [[ "$wd" == "$PWD" ]] && continue
-            printf '    \033[2m→ new in  %s\033[0m\t__NEW_AT__%s\t—\t—\t—\n' "$wd" "$wd"
-        done
-} > "$OUT"
+# Same row builder honk uses (shared helper in lib/list.sh, so this view
+# can't drift from the real picker).
+honk_picker_rows > "$OUT"
 
 printf 'rows built  = %s\n' "$(wc -l <"$OUT")" >&2
 printf 'first 3:    =\n' >&2
